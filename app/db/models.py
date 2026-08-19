@@ -44,11 +44,13 @@ class User(Base):
 
     __table_args__ = (
         CheckConstraint("role in ('admin', 'analyst', 'viewer')", name="ck_users_role"),
+        {"schema": "public"},
     )
 
 
 class ProcessCounter(Base):
     __tablename__ = "process_counters"
+    __table_args__ = {"schema": "public"}
 
     year: Mapped[int] = mapped_column(Integer, primary_key=True)
     last_value: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -86,6 +88,7 @@ class MediaRule(Base):
             "(area_threshold_m2 is null) = (radius_above_threshold_meters is null)",
             name="ck_media_rules_threshold_pair",
         ),
+        {"schema": "public"},
     )
 
 
@@ -146,6 +149,7 @@ class MediaAsset(Base):
         CheckConstraint("bottom_height_m >= 0", name="ck_media_assets_bottom_height"),
         CheckConstraint("top_height_m is null or top_height_m >= bottom_height_m", name="ck_media_assets_height_order"),
         Index("ix_media_assets_geom", "geom", postgresql_using="gist"),
+        {"schema": "public"},
     )
 
 
@@ -155,7 +159,7 @@ class ApplicationForm(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     asset_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("media_assets.id", ondelete="CASCADE"),
+        ForeignKey("public.media_assets.id", ondelete="CASCADE"),
         nullable=False,
         unique=True,
         index=True,
@@ -195,6 +199,7 @@ class ApplicationForm(Base):
         CheckConstraint("longitude between -180 and 180", name="ck_application_forms_longitude"),
         CheckConstraint("area_m2 > 0", name="ck_application_forms_area"),
         CheckConstraint("bottom_height_m >= 0", name="ck_application_forms_bottom_height"),
+        {"schema": "public"},
     )
 
 
@@ -204,12 +209,12 @@ class ActivityLog(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     asset_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("media_assets.id", ondelete="SET NULL"),
+        ForeignKey("public.media_assets.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
     actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+        UUID(as_uuid=True), ForeignKey("public.users.id", ondelete="SET NULL"), nullable=True, index=True
     )
     process_code: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
     activity_type: Mapped[str] = mapped_column(String(16), index=True, nullable=False)
@@ -225,4 +230,5 @@ class ActivityLog(Base):
             "activity_type in ('cadastro', 'aprovacao', 'reprovacao', 'edicao', 'remocao')",
             name="ck_activity_logs_type",
         ),
+        {"schema": "public"},
     )
