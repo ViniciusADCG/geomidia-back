@@ -1,24 +1,42 @@
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ActivityLog, MediaAsset
+from app.api.routes.media_rules import active_rule_for_type, calculate_rule_radius
+from app.core.security import require_roles
+from app.db.models import ActivityLog, MediaAsset, ProcessCounter, User
 from app.db.session import get_session
-from app.domain.rules import AssetForAnalysis, evaluate_conflicts, get_required_radius
+from app.domain.rules import AssetForAnalysis, evaluate_conflicts
 from app.schemas import (
     ActivityType,
     ConflictAnalysisRead,
+    MediaAssetBase,
     MediaAssetCreate,
+    MediaAssetPage,
     MediaAssetRead,
     MediaAssetUpdate,
     MediaStatsRead,
+    MediaStatus,
+    MediaType,
 )
 
-
 router = APIRouter(prefix="/media-assets", tags=["media-assets"])
+READ_ROLES = ("admin", "analyst", "viewer")
+WRITE_ROLES = ("admin", "analyst")
+APPROVAL_LOCK_ID = 729_041
+ANALYSIS_STATUS_VALUES = (
+    MediaStatus.analysis.value,
+    MediaStatus.exigency.value,
+    MediaStatus.expired.value,
+    MediaStatus.cartography.value,
+    MediaStatus.legal.value,
+    MediaStatus.inspection.value,
+)
 
 
 def to_analysis_asset(asset: MediaAsset) -> AssetForAnalysis:
@@ -34,6 +52,33 @@ def to_analysis_asset(asset: MediaAsset) -> AssetForAnalysis:
     )
 
 
+def asset_snapshot(asset: MediaAsset) -> dict[str, Any]:
+    return {
+        "media_type": asset.media_type,
+        "address": asset.address,
+        "district": asset.district,
+        "latitude": asset.latitude,
+        "longitude": asset.longitude,
+        "area_m2": asset.area_m2,
+        "width_m": asset.width_m,
+        "bottom_height_m": asset.bottom_height_m,
+        "top_height_m": asset.top_height_m,
+        "status": asset.status,
+        "justification": asset.justification,
+        "attachment_links": asset.attachment_links,
+        "contact_name": asset.contact_name,
+        "contact_email": asset.contact_email,
+        "radius_meters": asset.radius_meters,
+    }
+
+
+def asset_for_user(asset: MediaAsset, user: User) -> MediaAssetRead:
+    serialized = MediaAssetRead.model_validate(asset)
+    if user.role == "viewer":
+        return serialized.model_copy(update={"contact_name": None, "contact_email": None})
+    return serialized
+
+
 async def get_asset_or_404(asset_id: UUID, session: AsyncSession) -> MediaAsset:
     asset = await session.get(MediaAsset, asset_id)
     if asset is None:
@@ -42,35 +87,81 @@ async def get_asset_or_404(asset_id: UUID, session: AsyncSession) -> MediaAsset:
 
 
 async def next_process_code(session: AsyncSession) -> str:
-    year = datetime.now().year
+    year = datetime.now(UTC).year
     prefix = f"PROC-{year}-"
-    count = await session.scalar(
-        select(func.count()).select_from(MediaAsset).where(MediaAsset.process_code.like(f"{prefix}%"))
+    existing_codes = await session.scalars(
+        select(MediaAsset.process_code).where(MediaAsset.process_code.like(f"{prefix}%"))
     )
-    return f"{prefix}{(count or 0) + 101:03d}"
+    existing_numbers: list[int] = []
+    for code in existing_codes:
+        try:
+            existing_numbers.append(int(code.rsplit("-", 1)[1]))
+        except (IndexError, ValueError):
+            continue
+    first_value = max(existing_numbers, default=100) + 1
+
+    statement = (
+        pg_insert(ProcessCounter)
+        .values(year=year, last_value=first_value)
+        .on_conflict_do_update(
+            index_elements=[ProcessCounter.year],
+            set_={"last_value": ProcessCounter.last_value + 1},
+        )
+        .returning(ProcessCounter.last_value)
+    )
+    sequence_value = await session.scalar(statement)
+    return f"{prefix}{sequence_value:03d}"
 
 
-def log_activity(asset: MediaAsset, activity_type: ActivityType, message: str) -> ActivityLog:
+def log_activity(
+    asset: MediaAsset,
+    activity_type: ActivityType,
+    message: str,
+    actor: User | None = None,
+    request_id: str | None = None,
+    changes: dict[str, Any] | None = None,
+) -> ActivityLog:
     return ActivityLog(
         asset_id=asset.id,
+        actor_user_id=actor.id if actor else None,
         process_code=asset.process_code,
         activity_type=activity_type.value,
         message=message,
+        request_id=request_id,
+        changes=changes,
     )
 
 
-@router.get("", response_model=list[MediaAssetRead])
-async def list_media_assets(
-    search: str | None = None,
-    media_type: str | None = Query(default=None),
-    status_filter: str | None = Query(default=None, alias="status"),
-    session: AsyncSession = Depends(get_session),
-) -> list[MediaAsset]:
-    stmt = select(MediaAsset).order_by(MediaAsset.created_at.desc())
+async def analyze_asset(asset: MediaAsset, session: AsyncSession) -> dict[str, Any]:
+    candidate_point = func.ST_SetSRID(func.ST_MakePoint(asset.longitude, asset.latitude), 4326)
+    largest_radius = await session.scalar(
+        select(func.max(MediaAsset.radius_meters)).where(MediaAsset.status != MediaStatus.irregular.value)
+    ) or 0
+    search_radius = max(asset.radius_meters, largest_radius, 500)
+    result = await session.scalars(
+        select(MediaAsset).where(
+            MediaAsset.id != asset.id,
+            MediaAsset.status != MediaStatus.irregular.value,
+            func.ST_DWithin(func.Geography(MediaAsset.geom), func.Geography(candidate_point), search_radius),
+        )
+    )
+    return evaluate_conflicts(to_analysis_asset(asset), [to_analysis_asset(item) for item in result])
 
+
+@router.get("", response_model=MediaAssetPage)
+async def list_media_assets(
+    search: str | None = Query(default=None, max_length=120),
+    media_type: MediaType | None = Query(default=None),
+    status_filter: MediaStatus | None = Query(default=None, alias="status"),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(require_roles(*READ_ROLES)),
+) -> MediaAssetPage:
+    filters = []
     if search:
-        pattern = f"%{search}%"
-        stmt = stmt.where(
+        pattern = f"%{search.strip()}%"
+        filters.append(
             or_(
                 MediaAsset.address.ilike(pattern),
                 MediaAsset.district.ilike(pattern),
@@ -78,70 +169,94 @@ async def list_media_assets(
             )
         )
     if media_type:
-        stmt = stmt.where(MediaAsset.media_type == media_type)
+        filters.append(MediaAsset.media_type == media_type.value)
     if status_filter:
-        stmt = stmt.where(MediaAsset.status == status_filter)
+        filters.append(MediaAsset.status == status_filter.value)
 
-    result = await session.scalars(stmt)
-    return list(result)
+    total = await session.scalar(select(func.count()).select_from(MediaAsset).where(*filters)) or 0
+    result = await session.scalars(
+        select(MediaAsset)
+        .where(*filters)
+        .order_by(MediaAsset.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    return MediaAssetPage(
+        items=[asset_for_user(asset, current_user) for asset in result],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/stats", response_model=MediaStatsRead)
-async def get_media_stats(session: AsyncSession = Depends(get_session)) -> MediaStatsRead:
-    assets = list(await session.scalars(select(MediaAsset)))
-    by_type: dict[str, int] = {}
-    for asset in assets:
-        by_type[asset.media_type] = by_type.get(asset.media_type, 0) + 1
-
+async def get_media_stats(
+    session: AsyncSession = Depends(get_session),
+    _: User = Depends(require_roles(*READ_ROLES)),
+) -> MediaStatsRead:
+    summary = (
+        await session.execute(
+            select(
+                func.count(MediaAsset.id),
+                func.count(MediaAsset.id).filter(MediaAsset.status.in_(ANALYSIS_STATUS_VALUES)),
+                func.count(MediaAsset.id).filter(MediaAsset.status == MediaStatus.approved.value),
+                func.count(MediaAsset.id).filter(MediaAsset.status == MediaStatus.irregular.value),
+            )
+        )
+    ).one()
+    by_type_rows = await session.execute(
+        select(MediaAsset.media_type, func.count(MediaAsset.id)).group_by(MediaAsset.media_type)
+    )
     return MediaStatsRead(
-        total=len(assets),
-        pending=sum(1 for asset in assets if asset.status == "Pendente"),
-        approved=sum(1 for asset in assets if asset.status == "Aprovado"),
-        rejected=sum(1 for asset in assets if asset.status == "Reprovado"),
-        by_type=by_type,
+        total=summary[0],
+        pending=summary[1],
+        approved=summary[2],
+        rejected=summary[3],
+        by_type={media_type: count for media_type, count in by_type_rows},
     )
 
 
 @router.get("/{asset_id}", response_model=MediaAssetRead)
-async def get_media_asset(asset_id: UUID, session: AsyncSession = Depends(get_session)) -> MediaAsset:
-    return await get_asset_or_404(asset_id, session)
+async def get_media_asset(
+    asset_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(require_roles(*READ_ROLES)),
+) -> MediaAssetRead:
+    return asset_for_user(await get_asset_or_404(asset_id, session), current_user)
 
 
 @router.get("/{asset_id}/analysis", response_model=ConflictAnalysisRead)
-async def analyze_media_asset(asset_id: UUID, session: AsyncSession = Depends(get_session)) -> dict:
-    asset = await get_asset_or_404(asset_id, session)
-    candidate_point = func.ST_SetSRID(func.ST_MakePoint(asset.longitude, asset.latitude), 4326)
-    result = await session.scalars(
-        select(MediaAsset).where(
-            MediaAsset.id != asset_id,
-            MediaAsset.status != "Reprovado",
-            func.ST_DWithin(func.Geography(MediaAsset.geom), func.Geography(candidate_point), 2000),
-        )
-    )
-    analysis = evaluate_conflicts(to_analysis_asset(asset), [to_analysis_asset(item) for item in result])
-    return analysis
+async def analyze_media_asset(
+    asset_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    _: User = Depends(require_roles(*READ_ROLES)),
+) -> dict[str, Any]:
+    return await analyze_asset(await get_asset_or_404(asset_id, session), session)
 
 
 @router.post("", response_model=MediaAssetRead, status_code=status.HTTP_201_CREATED)
 async def create_media_asset(
     payload: MediaAssetCreate,
+    request: Request,
     session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(require_roles(*WRITE_ROLES)),
 ) -> MediaAsset:
-    data = payload.model_dump()
-    data["media_type"] = payload.media_type.value
-    data["status"] = payload.status.value
+    data = payload.model_dump(mode="json")
     data["process_code"] = await next_process_code(session)
-    data["radius_meters"] = get_required_radius(payload.media_type.value, payload.area_m2)
+    rule = await active_rule_for_type(payload.media_type.value, session)
+    data["radius_meters"] = calculate_rule_radius(rule, payload.area_m2)
 
     asset = MediaAsset(**data)
     session.add(asset)
     await session.flush()
-
     session.add(
         log_activity(
             asset,
             ActivityType.cadastro,
             f"Cadastro solicitado para {asset.media_type.upper()} em {asset.address}.",
+            current_user,
+            request.state.request_id,
+            {"after": asset_snapshot(asset)},
         )
     )
     await session.commit()
@@ -153,45 +268,99 @@ async def create_media_asset(
 async def update_media_asset(
     asset_id: UUID,
     payload: MediaAssetUpdate,
+    request: Request,
     session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(require_roles(*WRITE_ROLES)),
 ) -> MediaAsset:
     asset = await get_asset_or_404(asset_id, session)
-    previous_status = asset.status
+    before = asset_snapshot(asset)
+    update_data = payload.model_dump(exclude_unset=True, mode="json")
 
-    update_data = payload.model_dump(exclude_unset=True)
-    if "media_type" in update_data and update_data["media_type"] is not None:
-        update_data["media_type"] = update_data["media_type"].value
-    if "status" in update_data and update_data["status"] is not None:
-        update_data["status"] = update_data["status"].value
+    required_fields = {"media_type", "address", "district", "latitude", "longitude", "area_m2", "bottom_height_m", "status"}
+    invalid_nulls = required_fields.intersection(field for field, value in update_data.items() if value is None)
+    if invalid_nulls:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Campos obrigatorios nao podem ser nulos: {', '.join(sorted(invalid_nulls))}.",
+        )
 
-    for field, value in update_data.items():
+    merged = {key: before[key] for key in MediaAssetBase.model_fields}
+    merged.update(update_data)
+    validated = MediaAssetBase.model_validate(merged)
+    final_data = validated.model_dump(mode="json")
+    if validated.status == MediaStatus.irregular and not (validated.justification or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A justificativa e obrigatoria para marcar um processo como irregular.",
+        )
+
+    for field, value in final_data.items():
         setattr(asset, field, value)
+    rule = await active_rule_for_type(asset.media_type, session)
+    asset.radius_meters = calculate_rule_radius(rule, asset.area_m2)
 
-    asset.radius_meters = get_required_radius(asset.media_type, asset.area_m2)
-    await session.flush()
+    if asset.status == MediaStatus.approved.value:
+        await session.execute(select(func.pg_advisory_xact_lock(APPROVAL_LOCK_ID)))
+        await session.flush()
+        analysis = await analyze_asset(asset, session)
+        if analysis["has_conflict"]:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"message": analysis["message"], "conflicts": analysis["conflicts"]},
+            )
 
-    if previous_status != asset.status:
-        activity_type = ActivityType.aprovacao if asset.status == "Aprovado" else ActivityType.reprovacao
-        message = f"Processo {asset.process_code} alterado para {asset.status}. {asset.justification or ''}".strip()
+    after = asset_snapshot(asset)
+    changed = {
+        field: {"before": before.get(field), "after": value}
+        for field, value in after.items()
+        if before.get(field) != value
+    }
+    if not changed:
+        return asset
+
+    previous_status = before["status"]
+    if previous_status != asset.status and asset.status == MediaStatus.approved.value:
+        activity_type = ActivityType.aprovacao
+        message = f"Processo {asset.process_code} aprovado. {asset.justification or ''}".strip()
+    elif previous_status != asset.status and asset.status == MediaStatus.irregular.value:
+        activity_type = ActivityType.reprovacao
+        message = f"Processo {asset.process_code} marcado como irregular. {asset.justification or ''}".strip()
     else:
         activity_type = ActivityType.edicao
-        message = f"Dados cadastrais do processo {asset.process_code} foram atualizados."
+        message = f"Dados do processo {asset.process_code} foram atualizados."
 
-    session.add(log_activity(asset, activity_type, message))
+    session.add(
+        log_activity(
+            asset,
+            activity_type,
+            message,
+            current_user,
+            request.state.request_id,
+            changed,
+        )
+    )
     await session.commit()
     await session.refresh(asset)
     return asset
 
 
 @router.delete("/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_media_asset(asset_id: UUID, session: AsyncSession = Depends(get_session)) -> None:
+async def delete_media_asset(
+    asset_id: UUID,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(require_roles("admin")),
+) -> None:
     asset = await get_asset_or_404(asset_id, session)
     session.add(
         ActivityLog(
             asset_id=None,
+            actor_user_id=current_user.id,
             process_code=asset.process_code,
             activity_type=ActivityType.remocao.value,
             message=f"Registro {asset.process_code} removido do inventario municipal.",
+            request_id=request.state.request_id,
+            changes={"before": asset_snapshot(asset), "after": None},
         )
     )
     await session.delete(asset)

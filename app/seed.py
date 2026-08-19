@@ -8,7 +8,6 @@ from app.db.session import SessionLocal, init_models
 from app.domain.rules import get_required_radius
 from app.schemas import ActivityType
 
-
 SEED_ASSETS = [
     {
         "process_code": "PROC-2026-101",
@@ -20,7 +19,7 @@ SEED_ASSETS = [
         "area_m2": 27,
         "width_m": 9,
         "bottom_height_m": 5,
-        "status": "Aprovado",
+        "status": "aprovado",
         "justification": "Atende as distancias regulamentares da Avenida Afonso Pena.",
         "contact_name": "Lucia Pereira",
         "contact_email": "lucia@outdoormidia.com.br",
@@ -34,8 +33,8 @@ SEED_ASSETS = [
         "longitude": -54.589,
         "area_m2": 45,
         "bottom_height_m": 7,
-        "status": "Aprovado",
-        "justification": "Painel de LED de grande porte aprovado em via de trafego rapido.",
+        "status": "aprovado",
+        "justification": "Painel Eletrônico Modular - Pequeno Porte aprovado em via de trafego rapido.",
         "contact_name": "Fernando Silva",
         "contact_email": "fernando@ledtech.com.br",
     },
@@ -49,7 +48,7 @@ SEED_ASSETS = [
         "area_m2": 36,
         "bottom_height_m": 6,
         "top_height_m": 12,
-        "status": "Pendente",
+        "status": "análise",
         "contact_name": "Roberto Santos",
         "contact_email": "roberto@propaganda.com.br",
     },
@@ -62,7 +61,7 @@ SEED_ASSETS = [
         "longitude": -54.601,
         "area_m2": 120,
         "bottom_height_m": 15,
-        "status": "Pendente",
+        "status": "exigência",
         "contact_name": "Amanda Costa",
         "contact_email": "amanda@empenasled.com.br",
     },
@@ -76,7 +75,7 @@ SEED_ASSETS = [
         "area_m2": 32,
         "bottom_height_m": 6,
         "top_height_m": 11,
-        "status": "Reprovado",
+        "status": "irregular",
         "justification": "Divergencia: raio de protecao municipal insuficiente.",
         "contact_name": "Marcos Oliveira",
         "contact_email": "marcos@signcomunicacao.com.br",

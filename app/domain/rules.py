@@ -2,8 +2,7 @@ from dataclasses import dataclass
 from math import atan2, cos, radians, sin, sqrt
 from typing import Any
 
-
-REJECTED_STATUS = "Reprovado"
+REJECTED_STATUS = "irregular"
 
 
 @dataclass(frozen=True)
@@ -34,7 +33,7 @@ def get_required_radius(media_type: str, area_m2: float) -> int:
     match media_type:
         case "painel de led":
             return 1000 if area_m2 > 5 else 250
-        case "empena de led":
+        case "painel eletronico modular" | "empena de led":
             return 1000
         case "outdoor" | "front light" | "triface" | "empena":
             return 80
@@ -46,7 +45,9 @@ def evaluate_conflicts(
     candidate: AssetForAnalysis,
     assets: list[AssetForAnalysis],
 ) -> dict[str, Any]:
-    candidate_radius = get_required_radius(candidate.media_type, candidate.area_m2)
+    # The persisted radius is calculated from the administrator-managed rule.
+    candidate_radius = candidate.radius_meters
+    conflicts: list[dict[str, Any]] = []
 
     for other in assets:
         if str(other.id) == str(candidate.id) or other.status == REJECTED_STATUS:
@@ -62,17 +63,13 @@ def evaluate_conflicts(
         if other.media_type == candidate.media_type:
             minimum_distance = max(candidate_radius, other.radius_meters)
             if distance < minimum_distance:
-                return {
-                    "has_conflict": True,
-                    "message": (
-                        f"Divergencia: conflito com o processo {other.process_code} "
-                        f"do mesmo tipo ({other.media_type.upper()}) a {round(distance)}m. "
-                        f"Minimo exigido: {minimum_distance}m."
-                    ),
+                conflicts.append({
                     "conflicting_asset_id": str(other.id),
+                    "process_code": other.process_code,
+                    "media_type": other.media_type,
                     "distance_meters": round(distance, 2),
                     "minimum_distance_meters": minimum_distance,
-                }
+                })
 
         led_panel_pair = {
             candidate.media_type,
@@ -80,17 +77,29 @@ def evaluate_conflicts(
         } == {"painel de led", "empena de led"}
 
         if led_panel_pair and distance < 500:
-            return {
-                "has_conflict": True,
-                "message": (
-                    f"Divergencia: conflito entre painel de LED e empena de LED "
-                    f"com o processo {other.process_code} a {round(distance)}m. "
-                    "Minimo exigido: 500m."
-                ),
+            conflicts.append({
                 "conflicting_asset_id": str(other.id),
+                "process_code": other.process_code,
+                "media_type": other.media_type,
                 "distance_meters": round(distance, 2),
                 "minimum_distance_meters": 500,
-            }
+            })
+
+    conflicts.sort(key=lambda item: item["distance_meters"])
+    if conflicts:
+        first = conflicts[0]
+        return {
+            "has_conflict": True,
+            "message": (
+                f"Divergencia com {len(conflicts)} processo(s). O mais proximo e "
+                f"{first['process_code']} a {round(first['distance_meters'])}m; "
+                f"minimo exigido: {first['minimum_distance_meters']}m."
+            ),
+            "conflicting_asset_id": first["conflicting_asset_id"],
+            "distance_meters": first["distance_meters"],
+            "minimum_distance_meters": first["minimum_distance_meters"],
+            "conflicts": conflicts,
+        }
 
     return {
         "has_conflict": False,
@@ -98,4 +107,5 @@ def evaluate_conflicts(
         "conflicting_asset_id": None,
         "distance_meters": None,
         "minimum_distance_meters": None,
+        "conflicts": [],
     }

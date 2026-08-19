@@ -4,11 +4,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session
 
-
 router = APIRouter(tags=["health"])
 
 
 @router.get("/health")
 async def health_check(session: AsyncSession = Depends(get_session)) -> dict[str, str]:
+    await session.execute(text("select 1"))
+    return {"status": "ok"}
+
+
+@router.get("/health/live")
+async def liveness_check() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@router.get("/health/ready")
+async def readiness_check(session: AsyncSession = Depends(get_session)) -> dict[str, str]:
     await session.execute(text("select 1"))
     return {"status": "ok"}
