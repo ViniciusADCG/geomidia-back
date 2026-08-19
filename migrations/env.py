@@ -53,7 +53,11 @@ async def run_async_migrations() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
-    async with connectable.connect() as connection:
+    # The PostGIS lookup in do_run_migrations starts SQLAlchemy's implicit
+    # transaction before Alembic enters its own transaction context. Own that
+    # outer transaction here so successful migrations are committed instead of
+    # being rolled back when the connection closes.
+    async with connectable.begin() as connection:
         await connection.run_sync(do_run_migrations)
     await connectable.dispose()
 
