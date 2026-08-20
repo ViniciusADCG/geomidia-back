@@ -18,6 +18,7 @@ class MediaType(str, Enum):
 
 
 class MediaStatus(str, Enum):
+    new_process = "novos processos"
     approved = "aprovado"
     irregular = "irregular"
     analysis = "análise"
@@ -60,7 +61,7 @@ class MediaAssetBase(BaseModel):
     width_m: float | None = Field(default=None, gt=0)
     bottom_height_m: float = Field(ge=0)
     top_height_m: float | None = Field(default=None, ge=0)
-    status: MediaStatus = MediaStatus.analysis
+    status: MediaStatus = MediaStatus.new_process
     justification: str | None = None
     attachment_links: str | None = None
     contact_name: str | None = Field(default=None, max_length=120)
@@ -90,9 +91,9 @@ class MediaAssetBase(BaseModel):
 
 class MediaAssetCreate(MediaAssetBase):
     @model_validator(mode="after")
-    def must_start_analysis(self) -> "MediaAssetCreate":
-        if self.status != MediaStatus.analysis:
-            raise ValueError("Novos processos devem iniciar como Análise.")
+    def must_start_as_new_process(self) -> "MediaAssetCreate":
+        if self.status != MediaStatus.new_process:
+            raise ValueError("Novos processos devem iniciar como Novos Processos.")
         return self
 
 
@@ -203,6 +204,7 @@ class ApplicationFormRead(ApplicationFormBase):
     id: UUID
     asset_id: UUID
     process_code: str
+    status: MediaStatus
     created_at: datetime
     updated_at: datetime
 

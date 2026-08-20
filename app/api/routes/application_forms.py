@@ -90,7 +90,7 @@ async def create_application_form(
         **asset_values,
         process_code=await next_process_code(session),
         radius_meters=calculate_rule_radius(rule, payload.area_m2),
-        status=MediaStatus.analysis.value,
+        status=MediaStatus.new_process.value,
     )
     session.add(asset)
     await session.flush()

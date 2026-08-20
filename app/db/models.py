@@ -112,7 +112,9 @@ class MediaAsset(Base):
     bottom_height_m: Mapped[float] = mapped_column(Float, nullable=False)
     top_height_m: Mapped[float | None] = mapped_column(Float, nullable=True)
     radius_meters: Mapped[int] = mapped_column(nullable=False)
-    status: Mapped[str] = mapped_column(String(16), index=True, nullable=False, default="análise")
+    status: Mapped[str] = mapped_column(
+        String(16), index=True, nullable=False, default="novos processos", server_default="novos processos"
+    )
     justification: Mapped[str | None] = mapped_column(Text, nullable=True)
     attachment_links: Mapped[str | None] = mapped_column(Text, nullable=True)
     contact_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
@@ -139,7 +141,8 @@ class MediaAsset(Base):
             name="ck_media_assets_media_type",
         ),
         CheckConstraint(
-            "status in ('aprovado', 'irregular', 'análise', 'exigência', 'vencido', 'cartografia', 'jurídico', 'vistoria')",
+            "status in ('novos processos', 'aprovado', 'irregular', 'análise', 'exigência', "
+            "'vencido', 'cartografia', 'jurídico', 'vistoria')",
             name="ck_media_assets_status",
         ),
         CheckConstraint("latitude between -90 and 90", name="ck_media_assets_latitude"),
@@ -188,6 +191,10 @@ class ApplicationForm(Base):
     @property
     def process_code(self) -> str:
         return self.asset.process_code
+
+    @property
+    def status(self) -> str:
+        return self.asset.status
 
     __table_args__ = (
         CheckConstraint(

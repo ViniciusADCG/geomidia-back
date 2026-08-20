@@ -30,6 +30,7 @@ READ_ROLES = ("admin", "analyst", "viewer")
 WRITE_ROLES = ("admin", "analyst")
 APPROVAL_LOCK_ID = 729_041
 ANALYSIS_STATUS_VALUES = (
+    MediaStatus.new_process.value,
     MediaStatus.analysis.value,
     MediaStatus.exigency.value,
     MediaStatus.expired.value,
@@ -37,6 +38,21 @@ ANALYSIS_STATUS_VALUES = (
     MediaStatus.legal.value,
     MediaStatus.inspection.value,
 )
+
+
+def ensure_direct_status_change_allowed(current_status: str, requested_status: str | None) -> None:
+    if requested_status is None or requested_status == current_status:
+        return
+    if current_status == MediaStatus.new_process.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Inicie a análise do novo processo antes de modificar seu status.",
+        )
+    if requested_status == MediaStatus.new_process.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Novos Processos é um status exclusivo de novos cadastros.",
+        )
 
 
 def to_analysis_asset(asset: MediaAsset) -> AssetForAnalysis:
@@ -231,7 +247,44 @@ async def analyze_media_asset(
     session: AsyncSession = Depends(get_session),
     _: User = Depends(require_roles(*READ_ROLES)),
 ) -> dict[str, Any]:
-    return await analyze_asset(await get_asset_or_404(asset_id, session), session)
+    asset = await get_asset_or_404(asset_id, session)
+    if asset.status == MediaStatus.new_process.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Inicie a análise do novo processo antes de calcular conflitos.",
+        )
+    return await analyze_asset(asset, session)
+
+
+@router.post("/{asset_id}/start-analysis", response_model=MediaAssetRead)
+async def start_media_asset_analysis(
+    asset_id: UUID,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(require_roles(*WRITE_ROLES)),
+) -> MediaAssetRead:
+    asset = await get_asset_or_404(asset_id, session)
+    if asset.status != MediaStatus.new_process.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Somente processos com status Novos Processos podem iniciar a análise.",
+        )
+
+    previous_status = asset.status
+    asset.status = MediaStatus.analysis.value
+    session.add(
+        log_activity(
+            asset,
+            ActivityType.edicao,
+            f"Análise do processo {asset.process_code} iniciada.",
+            current_user,
+            request.state.request_id,
+            {"status": {"before": previous_status, "after": asset.status}},
+        )
+    )
+    await session.commit()
+    await session.refresh(asset)
+    return asset_for_user(asset, current_user)
 
 
 @router.post("", response_model=MediaAssetRead, status_code=status.HTTP_201_CREATED)
@@ -275,6 +328,7 @@ async def update_media_asset(
     asset = await get_asset_or_404(asset_id, session)
     before = asset_snapshot(asset)
     update_data = payload.model_dump(exclude_unset=True, mode="json")
+    ensure_direct_status_change_allowed(asset.status, update_data.get("status"))
 
     required_fields = {"media_type", "address", "district", "latitude", "longitude", "area_m2", "bottom_height_m", "status"}
     invalid_nulls = required_fields.intersection(field for field, value in update_data.items() if value is None)

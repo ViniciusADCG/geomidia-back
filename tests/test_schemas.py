@@ -1,12 +1,15 @@
 import sys
 import unittest
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import ValidationError
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from app.schemas import ApplicationFormCreate, MediaAssetCreate
+from app.db.models import ApplicationForm, MediaAsset
+from app.schemas import ApplicationFormCreate, ApplicationFormRead, MediaAssetCreate
 
 
 def valid_asset(**overrides):
@@ -40,9 +43,13 @@ class MediaAssetSchemaTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             MediaAssetCreate.model_validate(valid_asset(latitude=-22))
 
-    def test_new_asset_must_start_analysis(self):
+    def test_new_asset_defaults_to_new_processes(self):
+        asset = MediaAssetCreate.model_validate(valid_asset())
+        self.assertEqual(asset.status.value, "novos processos")
+
+    def test_new_asset_cannot_skip_new_processes(self):
         with self.assertRaises(ValidationError):
-            MediaAssetCreate.model_validate(valid_asset(status="aprovado"))
+            MediaAssetCreate.model_validate(valid_asset(status="análise"))
 
 
 class ApplicationFormSchemaTests(unittest.TestCase):
@@ -77,6 +84,22 @@ class ApplicationFormSchemaTests(unittest.TestCase):
     def test_rejects_form_outside_operational_bounds(self):
         with self.assertRaises(ValidationError):
             ApplicationFormCreate.model_validate(self.valid_form(latitude=-22))
+
+    def test_read_form_exposes_linked_process_status(self):
+        now = datetime.now(UTC)
+        asset = MediaAsset(id=uuid.uuid4(), process_code="PROC-2026-999", status="novos processos")
+        application_form = ApplicationForm(
+            id=uuid.uuid4(),
+            asset_id=asset.id,
+            asset=asset,
+            created_at=now,
+            updated_at=now,
+            **self.valid_form(),
+        )
+
+        serialized = ApplicationFormRead.model_validate(application_form)
+
+        self.assertEqual(serialized.status.value, "novos processos")
 
 
 if __name__ == "__main__":
