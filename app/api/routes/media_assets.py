@@ -30,7 +30,6 @@ READ_ROLES = ("admin", "analyst", "viewer")
 WRITE_ROLES = ("admin", "analyst")
 APPROVAL_LOCK_ID = 729_041
 ANALYSIS_STATUS_VALUES = (
-    MediaStatus.new_process.value,
     MediaStatus.analysis.value,
     MediaStatus.exigency.value,
     MediaStatus.expired.value,
@@ -214,6 +213,7 @@ async def get_media_stats(
         await session.execute(
             select(
                 func.count(MediaAsset.id),
+                func.count(MediaAsset.id).filter(MediaAsset.status == MediaStatus.new_process.value),
                 func.count(MediaAsset.id).filter(MediaAsset.status.in_(ANALYSIS_STATUS_VALUES)),
                 func.count(MediaAsset.id).filter(MediaAsset.status == MediaStatus.approved.value),
                 func.count(MediaAsset.id).filter(MediaAsset.status == MediaStatus.irregular.value),
@@ -225,9 +225,10 @@ async def get_media_stats(
     )
     return MediaStatsRead(
         total=summary[0],
-        pending=summary[1],
-        approved=summary[2],
-        rejected=summary[3],
+        new_processes=summary[1],
+        pending=summary[2],
+        approved=summary[3],
+        rejected=summary[4],
         by_type={media_type: count for media_type, count in by_type_rows},
     )
 

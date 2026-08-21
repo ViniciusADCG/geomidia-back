@@ -249,6 +249,7 @@ class ConflictAnalysisRead(BaseModel):
 
 class MediaStatsRead(BaseModel):
     total: int
+    new_processes: int
     pending: int
     approved: int
     rejected: int

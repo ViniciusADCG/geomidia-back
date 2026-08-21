@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from app.api.routes.media_assets import (
+    ANALYSIS_STATUS_VALUES,
     analyze_media_asset,
     ensure_direct_status_change_allowed,
     start_media_asset_analysis,
@@ -40,6 +41,10 @@ def new_asset() -> MediaAsset:
 
 
 class MediaAssetWorkflowTests(unittest.TestCase):
+    def test_dashboard_separates_new_processes_from_analysis(self):
+        self.assertNotIn("novos processos", ANALYSIS_STATUS_VALUES)
+        self.assertIn("análise", ANALYSIS_STATUS_VALUES)
+
     def test_new_process_status_cannot_change_through_regular_update(self):
         with self.assertRaises(HTTPException) as context:
             ensure_direct_status_change_allowed("novos processos", "aprovado")
