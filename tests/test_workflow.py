@@ -2,7 +2,7 @@ import asyncio
 import sys
 import unittest
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -16,6 +16,7 @@ from app.api.routes.media_assets import (
     ANALYSIS_STATUS_VALUES,
     analyze_media_asset,
     ensure_direct_status_change_allowed,
+    expiration_window,
     start_media_asset_analysis,
 )
 from app.db.models import MediaAsset, User
@@ -41,6 +42,12 @@ def new_asset() -> MediaAsset:
 
 
 class MediaAssetWorkflowTests(unittest.TestCase):
+    def test_expiration_window_includes_today_and_the_ninetieth_day(self):
+        reference_date, window_end_date = expiration_window(date(2026, 8, 20))
+
+        self.assertEqual(reference_date, date(2026, 8, 20))
+        self.assertEqual(window_end_date, date(2026, 11, 18))
+
     def test_dashboard_separates_new_processes_from_analysis(self):
         self.assertNotIn("novos processos", ANALYSIS_STATUS_VALUES)
         self.assertIn("análise", ANALYSIS_STATUS_VALUES)

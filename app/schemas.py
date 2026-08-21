@@ -133,6 +133,13 @@ class MediaAssetPage(BaseModel):
     offset: int
 
 
+class MediaExpirationOverviewRead(BaseModel):
+    reference_date: date
+    window_end_date: date
+    expiring_soon: list[MediaAssetRead]
+    expired: list[MediaAssetRead]
+
+
 class ApplicationFormBase(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -257,6 +264,8 @@ class MediaStatsRead(BaseModel):
     pending: int
     approved: int
     rejected: int
+    expiring_soon: int
+    expired: int
     by_type: dict[str, int]
 
 

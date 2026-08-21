@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
@@ -20,6 +20,7 @@ from app.schemas import (
     MediaAssetPage,
     MediaAssetRead,
     MediaAssetUpdate,
+    MediaExpirationOverviewRead,
     MediaStatsRead,
     MediaStatus,
     MediaType,
@@ -29,6 +30,8 @@ router = APIRouter(prefix="/media-assets", tags=["media-assets"])
 READ_ROLES = ("admin", "analyst", "viewer")
 WRITE_ROLES = ("admin", "analyst")
 APPROVAL_LOCK_ID = 729_041
+EXPIRATION_WINDOW_DAYS = 90
+BUSINESS_TIMEZONE = timezone(timedelta(hours=-4))
 ANALYSIS_STATUS_VALUES = (
     MediaStatus.analysis.value,
     MediaStatus.exigency.value,
@@ -37,6 +40,11 @@ ANALYSIS_STATUS_VALUES = (
     MediaStatus.legal.value,
     MediaStatus.inspection.value,
 )
+
+
+def expiration_window(reference_date: date | None = None) -> tuple[date, date]:
+    start_date = reference_date or datetime.now(BUSINESS_TIMEZONE).date()
+    return start_date, start_date + timedelta(days=EXPIRATION_WINDOW_DAYS)
 
 
 def ensure_direct_status_change_allowed(current_status: str, requested_status: str | None) -> None:
@@ -210,6 +218,7 @@ async def get_media_stats(
     session: AsyncSession = Depends(get_session),
     _: User = Depends(require_roles(*READ_ROLES)),
 ) -> MediaStatsRead:
+    reference_date, window_end_date = expiration_window()
     summary = (
         await session.execute(
             select(
@@ -218,6 +227,10 @@ async def get_media_stats(
                 func.count(MediaAsset.id).filter(MediaAsset.status.in_(ANALYSIS_STATUS_VALUES)),
                 func.count(MediaAsset.id).filter(MediaAsset.status == MediaStatus.approved.value),
                 func.count(MediaAsset.id).filter(MediaAsset.status == MediaStatus.irregular.value),
+                func.count(MediaAsset.id).filter(
+                    MediaAsset.expiration_date.between(reference_date, window_end_date)
+                ),
+                func.count(MediaAsset.id).filter(MediaAsset.expiration_date < reference_date),
             )
         )
     ).one()
@@ -230,7 +243,33 @@ async def get_media_stats(
         pending=summary[2],
         approved=summary[3],
         rejected=summary[4],
+        expiring_soon=summary[5],
+        expired=summary[6],
         by_type={media_type: count for media_type, count in by_type_rows},
+    )
+
+
+@router.get("/expirations", response_model=MediaExpirationOverviewRead)
+async def get_media_expirations(
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(require_roles(*READ_ROLES)),
+) -> MediaExpirationOverviewRead:
+    reference_date, window_end_date = expiration_window()
+    expiring_soon = await session.scalars(
+        select(MediaAsset)
+        .where(MediaAsset.expiration_date.between(reference_date, window_end_date))
+        .order_by(MediaAsset.expiration_date.asc(), MediaAsset.process_code.asc())
+    )
+    expired = await session.scalars(
+        select(MediaAsset)
+        .where(MediaAsset.expiration_date < reference_date)
+        .order_by(MediaAsset.expiration_date.desc(), MediaAsset.process_code.asc())
+    )
+    return MediaExpirationOverviewRead(
+        reference_date=reference_date,
+        window_end_date=window_end_date,
+        expiring_soon=[asset_for_user(asset, current_user) for asset in expiring_soon],
+        expired=[asset_for_user(asset, current_user) for asset in expired],
     )
 
 
