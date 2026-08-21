@@ -32,6 +32,7 @@ def asset_data_from_form(form: ApplicationFormBase) -> dict[str, Any]:
         "longitude": form.longitude,
         "area_m2": form.area_m2,
         "bottom_height_m": form.bottom_height_m,
+        "expiration_date": form.expiration_date,
         "attachment_links": form.attachment_links,
         "contact_name": form.company_responsible,
         "contact_email": str(form.requester_email),
@@ -96,7 +97,7 @@ async def create_application_form(
     await session.flush()
 
     application_form = ApplicationForm(
-        **payload.model_dump(mode="json"),
+        **payload.model_dump(mode="json", exclude={"expiration_date"}),
         asset_id=asset.id,
         asset=asset,
     )
@@ -127,7 +128,9 @@ async def update_application_form(
 ) -> ApplicationForm:
     application_form = await get_form_or_404(form_id, session)
     changes = payload.model_dump(exclude_unset=True, mode="json")
-    required_fields = set(ApplicationFormBase.model_fields)
+    required_fields = {
+        field_name for field_name, field_info in ApplicationFormBase.model_fields.items() if field_info.is_required()
+    }
     invalid_nulls = required_fields.intersection(field for field, value in changes.items() if value is None)
     if invalid_nulls:
         raise HTTPException(
@@ -141,6 +144,8 @@ async def update_application_form(
     before = asset_snapshot(application_form.asset)
 
     for field, value in form_values.items():
+        if field == "expiration_date":
+            continue
         setattr(application_form, field, value)
 
     asset_values = asset_data_from_form(validated)

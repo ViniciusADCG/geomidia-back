@@ -1,7 +1,7 @@
 import sys
 import unittest
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -51,6 +51,10 @@ class MediaAssetSchemaTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             MediaAssetCreate.model_validate(valid_asset(status="análise"))
 
+    def test_accepts_authorization_expiration_date(self):
+        asset = MediaAssetCreate.model_validate(valid_asset(expiration_date="2027-05-20"))
+        self.assertEqual(asset.expiration_date, date(2027, 5, 20))
+
 
 class ApplicationFormSchemaTests(unittest.TestCase):
     def valid_form(self, **overrides):
@@ -85,9 +89,14 @@ class ApplicationFormSchemaTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             ApplicationFormCreate.model_validate(self.valid_form(latitude=-22))
 
-    def test_read_form_exposes_linked_process_status(self):
+    def test_read_form_exposes_linked_process_status_and_expiration(self):
         now = datetime.now(UTC)
-        asset = MediaAsset(id=uuid.uuid4(), process_code="PROC-2026-999", status="novos processos")
+        asset = MediaAsset(
+            id=uuid.uuid4(),
+            process_code="PROC-2026-999",
+            status="novos processos",
+            expiration_date=date(2027, 5, 20),
+        )
         application_form = ApplicationForm(
             id=uuid.uuid4(),
             asset_id=asset.id,
@@ -100,6 +109,7 @@ class ApplicationFormSchemaTests(unittest.TestCase):
         serialized = ApplicationFormRead.model_validate(application_form)
 
         self.assertEqual(serialized.status.value, "novos processos")
+        self.assertEqual(serialized.expiration_date, date(2027, 5, 20))
 
 
 if __name__ == "__main__":

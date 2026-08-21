@@ -78,6 +78,7 @@ def asset_snapshot(asset: MediaAsset) -> dict[str, Any]:
         "width_m": asset.width_m,
         "bottom_height_m": asset.bottom_height_m,
         "top_height_m": asset.top_height_m,
+        "expiration_date": asset.expiration_date.isoformat() if asset.expiration_date else None,
         "status": asset.status,
         "justification": asset.justification,
         "attachment_links": asset.attachment_links,
@@ -296,6 +297,7 @@ async def create_media_asset(
     current_user: User = Depends(require_roles(*WRITE_ROLES)),
 ) -> MediaAsset:
     data = payload.model_dump(mode="json")
+    data["expiration_date"] = payload.expiration_date
     data["process_code"] = await next_process_code(session)
     rule = await active_rule_for_type(payload.media_type.value, session)
     data["radius_meters"] = calculate_rule_radius(rule, payload.area_m2)
@@ -343,6 +345,7 @@ async def update_media_asset(
     merged.update(update_data)
     validated = MediaAssetBase.model_validate(merged)
     final_data = validated.model_dump(mode="json")
+    final_data["expiration_date"] = validated.expiration_date
     if validated.status == MediaStatus.irregular and not (validated.justification or "").strip():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

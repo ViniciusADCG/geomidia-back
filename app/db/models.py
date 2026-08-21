@@ -1,11 +1,12 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from geoalchemy2 import Geometry
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Computed,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -111,6 +112,7 @@ class MediaAsset(Base):
     width_m: Mapped[float | None] = mapped_column(Float, nullable=True)
     bottom_height_m: Mapped[float] = mapped_column(Float, nullable=False)
     top_height_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    expiration_date: Mapped[date | None] = mapped_column(Date, index=True, nullable=True)
     radius_meters: Mapped[int] = mapped_column(nullable=False)
     status: Mapped[str] = mapped_column(
         String(16), index=True, nullable=False, default="novos processos", server_default="novos processos"
@@ -195,6 +197,10 @@ class ApplicationForm(Base):
     @property
     def status(self) -> str:
         return self.asset.status
+
+    @property
+    def expiration_date(self) -> date | None:
+        return self.asset.expiration_date
 
     __table_args__ = (
         CheckConstraint(

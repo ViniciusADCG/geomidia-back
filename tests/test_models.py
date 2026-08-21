@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from app.db.models import ActivityLog, ApplicationForm, Base
+from app.db.models import ActivityLog, ApplicationForm, Base, MediaAsset
 
 
 class ModelSchemaTests(unittest.TestCase):
@@ -20,6 +20,9 @@ class ModelSchemaTests(unittest.TestCase):
         self.assertEqual(application_asset_fk.target_fullname, "public.media_assets.id")
         self.assertEqual(activity_asset_fk.target_fullname, "public.media_assets.id")
         self.assertEqual(activity_actor_fk.target_fullname, "public.users.id")
+
+    def test_expiration_date_is_indexed_for_future_deadline_queries(self):
+        self.assertTrue(MediaAsset.__table__.c.expiration_date.index)
 
 
 if __name__ == "__main__":

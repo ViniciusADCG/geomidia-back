@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from uuid import UUID
 
@@ -61,6 +61,7 @@ class MediaAssetBase(BaseModel):
     width_m: float | None = Field(default=None, gt=0)
     bottom_height_m: float = Field(ge=0)
     top_height_m: float | None = Field(default=None, ge=0)
+    expiration_date: date | None = None
     status: MediaStatus = MediaStatus.new_process
     justification: str | None = None
     attachment_links: str | None = None
@@ -107,6 +108,7 @@ class MediaAssetUpdate(BaseModel):
     width_m: float | None = Field(default=None, gt=0)
     bottom_height_m: float | None = Field(default=None, ge=0)
     top_height_m: float | None = Field(default=None, ge=0)
+    expiration_date: date | None = None
     status: MediaStatus | None = None
     justification: str | None = None
     attachment_links: str | None = None
@@ -146,6 +148,7 @@ class ApplicationFormBase(BaseModel):
     media_type: MediaType
     area_m2: float = Field(gt=0)
     bottom_height_m: float = Field(ge=0)
+    expiration_date: date | None = None
     requester_email: EmailStr
     attachment_links: str | None = None
 
@@ -196,6 +199,7 @@ class ApplicationFormUpdate(BaseModel):
     media_type: MediaType | None = None
     area_m2: float | None = Field(default=None, gt=0)
     bottom_height_m: float | None = Field(default=None, ge=0)
+    expiration_date: date | None = None
     requester_email: EmailStr | None = None
     attachment_links: str | None = None
 
