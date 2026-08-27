@@ -15,7 +15,7 @@ from app.api.routes.public_submissions import (
 )
 from app.core.config import Settings
 from app.schemas import PublicAttachmentInput, PublicNewProcessPayload
-from app.services.storage import SupabaseStorage
+from app.services.storage import StorageConfigurationError, SupabaseStorage
 
 
 def valid_public_payload(**overrides):
@@ -129,6 +129,10 @@ class PublicSubmissionTests(unittest.TestCase):
             storage.headers,
             {"apikey": "legacy-jwt", "Authorization": "Bearer legacy-jwt"},
         )
+
+    def test_supabase_url_requires_protocol(self):
+        with self.assertRaises(StorageConfigurationError):
+            SupabaseStorage(Settings(supabase_url="example.supabase.co", supabase_service_role_key="sb_secret_example"))
 
 
 if __name__ == "__main__":
