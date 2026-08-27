@@ -8,7 +8,8 @@ from pydantic import ValidationError
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from app.db.models import ApplicationForm, MediaAsset
+from app.api.routes.media_assets import asset_for_user
+from app.db.models import ApplicationForm, MediaAsset, User
 from app.schemas import ApplicationFormCreate, ApplicationFormRead, MediaAssetCreate
 
 
@@ -110,6 +111,38 @@ class ApplicationFormSchemaTests(unittest.TestCase):
 
         self.assertEqual(serialized.status.value, "novos processos")
         self.assertEqual(serialized.expiration_date, date(2027, 5, 20))
+
+    def test_media_asset_read_exposes_linked_company_fields(self):
+        now = datetime.now(UTC)
+        asset = MediaAsset(
+            id=uuid.uuid4(),
+            process_code="PROC-2026-998",
+            media_type="outdoor",
+            address="Av. Afonso Pena, 1000",
+            district="Centro",
+            latitude=-20.46,
+            longitude=-54.61,
+            area_m2=27,
+            bottom_height_m=5,
+            radius_meters=80,
+            status="novos processos",
+            created_at=now,
+            updated_at=now,
+        )
+        asset.application_form = ApplicationForm(
+            id=uuid.uuid4(),
+            asset_id=asset.id,
+            asset=asset,
+            created_at=now,
+            updated_at=now,
+            **self.valid_form(company_responsible="Empresa Filtro", municipal_registration="11222333000144"),
+        )
+        user = User(id=uuid.uuid4(), username="analista", full_name="Analista", password_hash="unused", role="analyst")
+
+        serialized = asset_for_user(asset, user)
+
+        self.assertEqual(serialized.company_responsible, "Empresa Filtro")
+        self.assertEqual(serialized.company_cnpj, "11222333000144")
 
 
 if __name__ == "__main__":

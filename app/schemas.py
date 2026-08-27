@@ -122,6 +122,8 @@ class MediaAssetRead(MediaAssetBase):
 
     id: UUID
     process_code: str
+    company_responsible: str | None = None
+    company_cnpj: str | None = None
     radius_meters: int
     created_at: datetime
     updated_at: datetime

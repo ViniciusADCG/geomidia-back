@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.routes.media_rules import active_rule_for_type, calculate_rule_radius
 from app.core.security import require_roles
@@ -98,13 +99,21 @@ def asset_snapshot(asset: MediaAsset) -> dict[str, Any]:
 
 def asset_for_user(asset: MediaAsset, user: User) -> MediaAssetRead:
     serialized = MediaAssetRead.model_validate(asset)
+    application_form = asset.__dict__.get("application_form")
+    if application_form is not None:
+        serialized = serialized.model_copy(
+            update={
+                "company_responsible": application_form.company_responsible,
+                "company_cnpj": application_form.municipal_registration,
+            }
+        )
     if user.role == "viewer":
         return serialized.model_copy(update={"contact_name": None, "contact_email": None})
     return serialized
 
 
 async def get_asset_or_404(asset_id: UUID, session: AsyncSession) -> MediaAsset:
-    asset = await session.get(MediaAsset, asset_id)
+    asset = await session.get(MediaAsset, asset_id, options=(selectinload(MediaAsset.application_form),))
     if asset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ativo nao encontrado.")
     return asset
@@ -200,6 +209,7 @@ async def list_media_assets(
     total = await session.scalar(select(func.count()).select_from(MediaAsset).where(*filters)) or 0
     result = await session.scalars(
         select(MediaAsset)
+        .options(selectinload(MediaAsset.application_form))
         .where(*filters)
         .order_by(MediaAsset.created_at.desc())
         .offset(offset)
@@ -257,11 +267,13 @@ async def get_media_expirations(
     reference_date, window_end_date = expiration_window()
     expiring_soon = await session.scalars(
         select(MediaAsset)
+        .options(selectinload(MediaAsset.application_form))
         .where(MediaAsset.expiration_date.between(reference_date, window_end_date))
         .order_by(MediaAsset.expiration_date.asc(), MediaAsset.process_code.asc())
     )
     expired = await session.scalars(
         select(MediaAsset)
+        .options(selectinload(MediaAsset.application_form))
         .where(MediaAsset.expiration_date < reference_date)
         .order_by(MediaAsset.expiration_date.desc(), MediaAsset.process_code.asc())
     )
@@ -325,6 +337,7 @@ async def start_media_asset_analysis(
     )
     await session.commit()
     await session.refresh(asset)
+    await session.refresh(asset, attribute_names=["application_form"])
     return asset_for_user(asset, current_user)
 
 
@@ -334,7 +347,7 @@ async def create_media_asset(
     request: Request,
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(require_roles(*WRITE_ROLES)),
-) -> MediaAsset:
+) -> MediaAssetRead:
     data = payload.model_dump(mode="json")
     data["expiration_date"] = payload.expiration_date
     data["process_code"] = await next_process_code(session)
@@ -356,7 +369,7 @@ async def create_media_asset(
     )
     await session.commit()
     await session.refresh(asset)
-    return asset
+    return asset_for_user(asset, current_user)
 
 
 @router.patch("/{asset_id}", response_model=MediaAssetRead)
@@ -366,7 +379,7 @@ async def update_media_asset(
     request: Request,
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(require_roles(*WRITE_ROLES)),
-) -> MediaAsset:
+) -> MediaAssetRead:
     asset = await get_asset_or_404(asset_id, session)
     before = asset_snapshot(asset)
     update_data = payload.model_dump(exclude_unset=True, mode="json")
@@ -413,7 +426,7 @@ async def update_media_asset(
         if before.get(field) != value
     }
     if not changed:
-        return asset
+        return asset_for_user(asset, current_user)
 
     previous_status = before["status"]
     if previous_status != asset.status and asset.status == MediaStatus.approved.value:
@@ -438,7 +451,8 @@ async def update_media_asset(
     )
     await session.commit()
     await session.refresh(asset)
-    return asset
+    await session.refresh(asset, attribute_names=["application_form"])
+    return asset_for_user(asset, current_user)
 
 
 @router.delete("/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
