@@ -33,10 +33,12 @@ class SupabaseStorage:
             raise StorageConfigurationError("Supabase Storage nao configurado.")
         self.storage_url = f"{self.settings.supabase_url.rstrip('/')}/storage/v1"
         self.bucket = self.settings.supabase_storage_bucket
-        self.headers = {
-            "apikey": self.settings.supabase_service_role_key,
-            "Authorization": f"Bearer {self.settings.supabase_service_role_key}",
-        }
+        api_key = self.settings.supabase_service_role_key
+        self.headers = {"apikey": api_key}
+        # Legacy service_role keys are JWTs and can be sent as Bearer tokens.
+        # Current sb_secret keys must be sent only through the apikey header.
+        if not api_key.startswith("sb_secret_"):
+            self.headers["Authorization"] = f"Bearer {api_key}"
 
     async def create_signed_upload(self, object_path: str) -> SignedUpload:
         encoded_path = quote(f"{self.bucket}/{object_path}", safe="/")

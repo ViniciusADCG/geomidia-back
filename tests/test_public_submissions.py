@@ -13,7 +13,9 @@ from app.api.routes.public_submissions import (
     validate_attachment_manifest,
     validate_submission_timing,
 )
+from app.core.config import Settings
 from app.schemas import PublicAttachmentInput, PublicNewProcessPayload
+from app.services.storage import SupabaseStorage
 
 
 def valid_public_payload(**overrides):
@@ -110,6 +112,23 @@ class PublicSubmissionTests(unittest.TestCase):
 
         self.assertEqual(name, "Projeto-Sao-Joao-final.PDF")
         self.assertNotIn("/", name)
+
+    def test_current_supabase_secret_uses_only_apikey_header(self):
+        storage = SupabaseStorage(
+            Settings(supabase_url="https://example.supabase.co", supabase_service_role_key="sb_secret_example")
+        )
+
+        self.assertEqual(storage.headers, {"apikey": "sb_secret_example"})
+
+    def test_legacy_service_role_key_is_also_sent_as_bearer(self):
+        storage = SupabaseStorage(
+            Settings(supabase_url="https://example.supabase.co", supabase_service_role_key="legacy-jwt")
+        )
+
+        self.assertEqual(
+            storage.headers,
+            {"apikey": "legacy-jwt", "Authorization": "Bearer legacy-jwt"},
+        )
 
 
 if __name__ == "__main__":
