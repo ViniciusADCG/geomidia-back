@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from enum import Enum
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
@@ -155,6 +156,7 @@ class ApplicationFormBase(BaseModel):
     media_type: MediaType
     area_m2: float = Field(gt=0)
     bottom_height_m: float = Field(ge=0)
+    number_of_faces: str | None = Field(default=None, max_length=30)
     expiration_date: date | None = None
     requester_email: EmailStr
     attachment_links: str | None = None
@@ -167,6 +169,7 @@ class ApplicationFormBase(BaseModel):
         "number",
         "district",
         "postal_code",
+        "number_of_faces",
         "attachment_links",
         mode="before",
     )
@@ -206,9 +209,21 @@ class ApplicationFormUpdate(BaseModel):
     media_type: MediaType | None = None
     area_m2: float | None = Field(default=None, gt=0)
     bottom_height_m: float | None = Field(default=None, ge=0)
+    number_of_faces: str | None = Field(default=None, max_length=30)
     expiration_date: date | None = None
     requester_email: EmailStr | None = None
     attachment_links: str | None = None
+
+
+class ApplicationFormAttachmentRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    category: str
+    original_filename: str
+    content_type: str
+    size_bytes: int
+    created_at: datetime
 
 
 class ApplicationFormRead(ApplicationFormBase):
@@ -216,8 +231,96 @@ class ApplicationFormRead(ApplicationFormBase):
     asset_id: UUID
     process_code: str
     status: MediaStatus
+    attachments: list[ApplicationFormAttachmentRead] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+
+
+class PublicApplicantInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    company: str = Field(alias="empresa", min_length=2, max_length=120)
+    municipal_registration: str = Field(alias="inscricaoMunicipal", min_length=1, max_length=60)
+
+
+class PublicLocationInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    property_registration: str = Field(alias="inscricaoImobiliaria", pattern=r"^\d{11}$")
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    street: str = Field(alias="rua", min_length=2, max_length=180)
+    number: str = Field(alias="numero", min_length=1, max_length=30)
+    district: str = Field(alias="bairro", min_length=2, max_length=120)
+    postal_code: str = Field(alias="cep", pattern=r"^\d{5}-?\d{3}$")
+
+
+class PublicVehicleInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    media_type: MediaType = Field(alias="tipo")
+    number_of_faces: str = Field(alias="quantidadeFaces", min_length=1, max_length=30)
+    area_m2: float = Field(alias="areaM2", gt=0)
+    bottom_height_m: float = Field(alias="alturaBordaInferiorM", ge=0)
+
+
+class PublicNewProcessPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    process_type: Literal["PROCESSO_NOVO"] = Field(alias="tipoProcesso")
+    email: EmailStr
+    applicant: PublicApplicantInput = Field(alias="requerente")
+    location: PublicLocationInput = Field(alias="localInstalacao")
+    vehicle: PublicVehicleInput = Field(alias="veiculoDivulgacao")
+    acknowledgement: bool = Field(alias="ciente")
+    started_at: datetime = Field(alias="iniciadoEm")
+    website: str = Field(default="", max_length=200)
+
+
+class PublicAttachmentInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    client_id: str = Field(alias="idCliente", min_length=1, max_length=100)
+    category: str = Field(alias="categoria", min_length=1, max_length=40)
+    filename: str = Field(alias="nome", min_length=1, max_length=180)
+    content_type: str = Field(alias="tipoConteudo", min_length=1, max_length=120)
+    size_bytes: int = Field(alias="tamanhoBytes", gt=0, le=10 * 1024 * 1024)
+
+
+class PublicSubmissionInitiate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    payload: PublicNewProcessPayload
+    attachments: list[PublicAttachmentInput] = Field(alias="arquivos", min_length=1, max_length=31)
+
+
+class PublicUploadTarget(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    client_id: str = Field(alias="idCliente")
+    object_path: str = Field(alias="caminhoObjeto")
+    signed_url: str = Field(alias="urlAssinada")
+
+
+class PublicSubmissionInitiated(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    draft_id: UUID = Field(alias="rascunhoId")
+    token: str
+    uploads: list[PublicUploadTarget] = Field(alias="envios")
+
+
+class PublicSubmissionFinalize(BaseModel):
+    token: str = Field(min_length=32, max_length=200)
+
+
+class PublicSubmissionResult(BaseModel):
+    protocolo: str
+    message: str
+
+
+class AttachmentDownloadRead(BaseModel):
+    url: str
 
 
 class ActivityLogRead(BaseModel):

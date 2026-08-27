@@ -181,6 +181,7 @@ class ApplicationForm(Base):
     media_type: Mapped[str] = mapped_column(String(32), nullable=False)
     area_m2: Mapped[float] = mapped_column(Float, nullable=False)
     bottom_height_m: Mapped[float] = mapped_column(Float, nullable=False)
+    number_of_faces: Mapped[str | None] = mapped_column(String(30), nullable=True)
     requester_email: Mapped[str] = mapped_column(String(160), nullable=False)
     attachment_links: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, server_default=func.now())
@@ -189,6 +190,12 @@ class ApplicationForm(Base):
     )
 
     asset: Mapped[MediaAsset] = relationship(back_populates="application_form", lazy="joined")
+    attachments: Mapped[list["ApplicationFormAttachment"]] = relationship(
+        back_populates="application_form",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        passive_deletes=True,
+    )
 
     @property
     def process_code(self) -> str:
@@ -212,6 +219,49 @@ class ApplicationForm(Base):
         CheckConstraint("longitude between -180 and 180", name="ck_application_forms_longitude"),
         CheckConstraint("area_m2 > 0", name="ck_application_forms_area"),
         CheckConstraint("bottom_height_m >= 0", name="ck_application_forms_bottom_height"),
+        {"schema": "public"},
+    )
+
+
+class ApplicationFormAttachment(Base):
+    __tablename__ = "application_form_attachments"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    application_form_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("public.application_forms.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    category: Mapped[str] = mapped_column(String(40), nullable=False)
+    object_path: Mapped[str] = mapped_column(String(500), nullable=False, unique=True)
+    original_filename: Mapped[str] = mapped_column(String(180), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, server_default=func.now())
+
+    application_form: Mapped[ApplicationForm] = relationship(back_populates="attachments")
+
+    __table_args__ = (
+        CheckConstraint("size_bytes > 0 and size_bytes <= 10485760", name="ck_application_form_attachments_size"),
+        {"schema": "public"},
+    )
+
+
+class PublicSubmissionDraft(Base):
+    __tablename__ = "public_submission_drafts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    client_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    attachments: Mapped[list] = mapped_column(JSONB, nullable=False)
+    process_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, server_default=func.now())
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_public_submission_drafts_rate_limit", "client_fingerprint", "created_at"),
         {"schema": "public"},
     )
 

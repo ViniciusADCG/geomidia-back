@@ -4,7 +4,16 @@ from uuid import uuid4
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import activities, application_forms, auth, health, media_assets, media_rules, users
+from app.api.routes import (
+    activities,
+    application_forms,
+    auth,
+    health,
+    media_assets,
+    media_rules,
+    public_submissions,
+    users,
+)
 from app.core.config import get_settings
 from app.db.session import engine, init_models
 
@@ -51,3 +60,4 @@ app.include_router(activities.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 app.include_router(media_rules.router, prefix="/api")
 app.include_router(application_forms.router, prefix="/api")
+app.include_router(public_submissions.router, prefix="/api")

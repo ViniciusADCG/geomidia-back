@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.routes.media_assets import asset_snapshot, log_activity, next_process_code
 from app.api.routes.media_rules import active_rule_for_type, calculate_rule_radius
 from app.core.security import require_roles
-from app.db.models import ActivityLog, ApplicationForm, MediaAsset, User
+from app.db.models import ActivityLog, ApplicationForm, ApplicationFormAttachment, MediaAsset, User
 from app.db.session import get_session
 from app.schemas import (
     ActivityType,
@@ -16,8 +16,10 @@ from app.schemas import (
     ApplicationFormCreate,
     ApplicationFormRead,
     ApplicationFormUpdate,
+    AttachmentDownloadRead,
     MediaStatus,
 )
+from app.services.storage import StorageConfigurationError, StorageRequestError, SupabaseStorage
 
 router = APIRouter(prefix="/application-forms", tags=["application-forms"])
 FORM_ROLES = ("admin", "analyst")
@@ -173,6 +175,31 @@ async def update_application_form(
     await session.commit()
     await session.refresh(application_form)
     return application_form
+
+
+@router.get("/{form_id}/attachments/{attachment_id}/download", response_model=AttachmentDownloadRead)
+async def get_application_form_attachment_download(
+    form_id: UUID,
+    attachment_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    _: User = Depends(require_roles(*FORM_ROLES)),
+) -> AttachmentDownloadRead:
+    attachment = await session.scalar(
+        select(ApplicationFormAttachment).where(
+            ApplicationFormAttachment.id == attachment_id,
+            ApplicationFormAttachment.application_form_id == form_id,
+        )
+    )
+    if attachment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Anexo nao encontrado.")
+    try:
+        url = await SupabaseStorage().create_download_url(attachment.object_path)
+    except (StorageConfigurationError, StorageRequestError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Nao foi possivel liberar o download do anexo.",
+        ) from exc
+    return AttachmentDownloadRead(url=url)
 
 
 @router.delete("/{form_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     city_max_latitude: float = -20.30
     city_min_longitude: float = -54.80
     city_max_longitude: float = -54.40
+    public_form_origins: str = "http://localhost:5173"
+    public_submission_rate_limit: int = 5
+    supabase_url: str | None = None
+    supabase_service_role_key: str | None = None
+    supabase_storage_bucket: str = "application-form-attachments"
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -68,6 +73,10 @@ class Settings(BaseSettings):
     @property
     def cors_allow_credentials(self) -> bool:
         return self.cors_origin_list != ["*"]
+
+    @property
+    def public_form_origin_list(self) -> list[str]:
+        return [origin.strip().rstrip("/") for origin in self.public_form_origins.split(",") if origin.strip()]
 
     @model_validator(mode="after")
     def validate_production_security(self) -> "Settings":
