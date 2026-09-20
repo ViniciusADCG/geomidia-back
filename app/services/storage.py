@@ -39,7 +39,9 @@ class SupabaseStorage:
             raise StorageConfigurationError("Supabase Storage nao configurado.")
         self.storage_url = f"{supabase_url}/storage/v1"
         self.bucket = self.settings.supabase_storage_bucket
-        self.headers = {"apikey": api_key, "Authorization": "Bearer " + api_key}
+        self.headers = {"apikey": api_key}
+        if not api_key.startswith("sb_secret_"):
+            self.headers["Authorization"] = "Bearer " + api_key
 
     async def create_signed_upload(self, object_path: str) -> SignedUpload:
         encoded_path = quote(f"{self.bucket}/{object_path}", safe="/")

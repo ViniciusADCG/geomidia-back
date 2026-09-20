@@ -10,7 +10,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from app.api.routes.media_assets import asset_for_user
 from app.db.models import ApplicationForm, MediaAsset, User
-from app.schemas import ApplicationFormCreate, ApplicationFormRead, MediaAssetCreate
+from app.schemas import ApplicationFormCreate, ApplicationFormRead, ApplicationFormUpdate, MediaAssetCreate
 
 
 def valid_asset(**overrides):
@@ -90,6 +90,15 @@ class ApplicationFormSchemaTests(unittest.TestCase):
     def test_rejects_form_outside_operational_bounds(self):
         with self.assertRaises(ValidationError):
             ApplicationFormCreate.model_validate(self.valid_form(latitude=-22))
+
+    def test_update_accepts_company_cnpj(self):
+        update = ApplicationFormUpdate.model_validate({"company_cnpj": "44555666000177"})
+
+        self.assertEqual(update.company_cnpj, "44555666000177")
+
+    def test_update_rejects_invalid_company_cnpj(self):
+        with self.assertRaises(ValidationError):
+            ApplicationFormUpdate.model_validate({"company_cnpj": "123"})
 
     def test_read_form_exposes_linked_process_status_and_expiration(self):
         now = datetime.now(UTC)

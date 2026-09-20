@@ -202,6 +202,7 @@ class ApplicationFormCreate(ApplicationFormBase):
 
 class ApplicationFormUpdate(BaseModel):
     company_responsible: str | None = Field(default=None, min_length=2, max_length=120)
+    company_cnpj: str | None = Field(default=None, pattern=r"^\d{14}$")
     municipal_registration: str | None = Field(default=None, min_length=1, max_length=60)
     property_registration: str | None = Field(default=None, min_length=1, max_length=60)
     latitude: float | None = Field(default=None, ge=-90, le=90)

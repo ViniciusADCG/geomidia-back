@@ -5,19 +5,17 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.routes.media_assets import asset_snapshot, log_activity, next_process_code
+from app.api.routes.media_assets import asset_snapshot, log_activity
 from app.api.routes.media_rules import active_rule_for_type, calculate_rule_radius
 from app.core.security import require_roles
-from app.db.models import ActivityLog, ApplicationForm, ApplicationFormAttachment, MediaAsset, User
+from app.db.models import ActivityLog, ApplicationForm, ApplicationFormAttachment, User
 from app.db.session import get_session
 from app.schemas import (
     ActivityType,
     ApplicationFormBase,
-    ApplicationFormCreate,
     ApplicationFormRead,
     ApplicationFormUpdate,
     AttachmentDownloadRead,
-    MediaStatus,
 )
 from app.services.storage import StorageConfigurationError, StorageRequestError, SupabaseStorage
 
@@ -79,46 +77,6 @@ async def get_application_form(
     _: User = Depends(require_roles(*FORM_ROLES)),
 ) -> ApplicationForm:
     return await get_form_or_404(form_id, session)
-
-
-@router.post("", response_model=ApplicationFormRead, status_code=status.HTTP_201_CREATED)
-async def create_application_form(
-    payload: ApplicationFormCreate,
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-    current_user: User = Depends(require_roles(*FORM_ROLES)),
-) -> ApplicationForm:
-    rule = await active_rule_for_type(payload.media_type.value, session)
-    asset_values = asset_data_from_form(payload)
-    asset = MediaAsset(
-        **asset_values,
-        process_code=await next_process_code(session),
-        radius_meters=calculate_rule_radius(rule, payload.area_m2),
-        status=MediaStatus.new_process.value,
-    )
-    session.add(asset)
-    await session.flush()
-
-    application_form = ApplicationForm(
-        **payload.model_dump(mode="json", exclude={"expiration_date"}),
-        asset_id=asset.id,
-        asset=asset,
-    )
-    session.add(application_form)
-    await session.flush()
-    session.add(
-        log_activity(
-            asset,
-            ActivityType.cadastro,
-            f"Formulario cadastrado para {payload.company_responsible} e vinculado ao processo {asset.process_code}.",
-            current_user,
-            request.state.request_id,
-            {"after": asset_snapshot(asset), "form_id": str(application_form.id)},
-        )
-    )
-    await session.commit()
-    await session.refresh(application_form)
-    return application_form
 
 
 @router.patch("/{form_id}", response_model=ApplicationFormRead)
