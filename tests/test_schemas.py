@@ -61,6 +61,7 @@ class ApplicationFormSchemaTests(unittest.TestCase):
     def valid_form(self, **overrides):
         data = {
             "company_responsible": "Empresa Teste",
+            "company_cnpj": "11222333000144",
             "municipal_registration": "12345",
             "property_registration": "67890",
             "latitude": -20.46,
@@ -135,7 +136,7 @@ class ApplicationFormSchemaTests(unittest.TestCase):
             asset=asset,
             created_at=now,
             updated_at=now,
-            **self.valid_form(company_responsible="Empresa Filtro", municipal_registration="11222333000144"),
+            **self.valid_form(company_responsible="Empresa Filtro", company_cnpj="11222333000144"),
         )
         user = User(id=uuid.uuid4(), username="analista", full_name="Analista", password_hash="unused", role="analyst")
 
