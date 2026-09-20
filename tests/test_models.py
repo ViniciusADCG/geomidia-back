@@ -24,6 +24,10 @@ class ModelSchemaTests(unittest.TestCase):
     def test_expiration_date_is_indexed_for_future_deadline_queries(self):
         self.assertTrue(MediaAsset.__table__.c.expiration_date.index)
 
+    def test_application_form_has_company_cnpj(self):
+        self.assertEqual(ApplicationForm.__table__.c.company_cnpj.type.length, 14)
+        self.assertTrue(ApplicationForm.__table__.c.company_cnpj.nullable)
+
 
 if __name__ == "__main__":
     unittest.main()

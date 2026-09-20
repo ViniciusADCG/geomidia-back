@@ -104,7 +104,7 @@ def asset_for_user(asset: MediaAsset, user: User) -> MediaAssetRead:
         serialized = serialized.model_copy(
             update={
                 "company_responsible": application_form.company_responsible,
-                "company_cnpj": application_form.municipal_registration,
+                "company_cnpj": application_form.company_cnpj,
             }
         )
     if user.role == "viewer":

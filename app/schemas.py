@@ -147,6 +147,7 @@ class ApplicationFormBase(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     company_responsible: str = Field(min_length=2, max_length=120)
+    company_cnpj: str | None = Field(default=None, pattern=r"^\d{14}$")
     municipal_registration: str = Field(min_length=1, max_length=60)
     property_registration: str = Field(min_length=1, max_length=60)
     latitude: float = Field(ge=-90, le=90)
@@ -165,6 +166,7 @@ class ApplicationFormBase(BaseModel):
 
     @field_validator(
         "company_responsible",
+        "company_cnpj",
         "municipal_registration",
         "property_registration",
         "street",
@@ -242,6 +244,7 @@ class PublicApplicantInput(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     company: str = Field(alias="empresa", min_length=2, max_length=120)
+    company_cnpj: str = Field(alias="cnpj", pattern=r"^\d{14}$")
     municipal_registration: str = Field(alias="inscricaoMunicipal", min_length=1, max_length=60)
 
 

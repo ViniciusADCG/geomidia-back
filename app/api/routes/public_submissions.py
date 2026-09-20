@@ -114,6 +114,7 @@ def application_form_from_public(payload: PublicNewProcessPayload) -> Applicatio
     return ApplicationFormBase.model_validate(
         {
             "company_responsible": payload.applicant.company,
+            "company_cnpj": payload.applicant.company_cnpj,
             "municipal_registration": payload.applicant.municipal_registration,
             "property_registration": payload.location.property_registration,
             "latitude": payload.location.latitude,

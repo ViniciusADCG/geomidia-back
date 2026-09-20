@@ -60,6 +60,7 @@ async def list_application_forms(
         filters.append(
             or_(
                 ApplicationForm.company_responsible.ilike(pattern),
+                ApplicationForm.company_cnpj.ilike(pattern),
                 ApplicationForm.municipal_registration.ilike(pattern),
                 ApplicationForm.property_registration.ilike(pattern),
                 ApplicationForm.street.ilike(pattern),
