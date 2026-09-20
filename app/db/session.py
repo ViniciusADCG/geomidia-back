@@ -9,15 +9,14 @@ from app.db.models import Base
 
 settings = get_settings()
 
-engine_options: dict[str, object] = {"pool_pre_ping": True}
-if settings.uses_transaction_pooler:
-    engine_options.update(
-        poolclass=NullPool,
-        connect_args={
-            "statement_cache_size": 0,
-            "prepared_statement_cache_size": 0,
-        },
-    )
+engine_options: dict[str, object] = {
+    "pool_pre_ping": True,
+    "poolclass": NullPool,
+    "connect_args": {
+        "statement_cache_size": 0,
+        "prepared_statement_cache_size": 0,
+    },
+}
 
 engine = create_async_engine(settings.database_url, **engine_options)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
