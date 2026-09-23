@@ -17,3 +17,5 @@ backend/.venv/
 # IDE
 .vscode/
 
+.vercel
+.env*

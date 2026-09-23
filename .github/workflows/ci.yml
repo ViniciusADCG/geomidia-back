@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_DB: geomidia_test
+          POSTGRES_USER: geomidia
+          POSTGRES_PASSWORD: geomidia
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U geomidia -d geomidia_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://geomidia:geomidia@localhost:5432/geomidia_test
+      JWT_SECRET: ci-only-secret-with-more-than-32-characters
+      CREATE_TABLES: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - run: alembic upgrade head
+      - run: ruff check app tests
+      - run: pytest

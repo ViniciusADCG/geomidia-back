@@ -1,0 +1,38 @@
+name: Production Health Check
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Backend health/ready
+        run: |
+          code=$(curl -s -o /tmp/back-ready -w "%{http_code}" --max-time 30 https://geomidia-back.vercel.app/health/ready)
+          echo "geomidia-back /health/ready -> $code"
+          test "$code" = "200"
+      - name: Backend health/live
+        run: |
+          code=$(curl -s -o /tmp/back-live -w "%{http_code}" --max-time 30 https://geomidia-back.vercel.app/health/live)
+          echo "geomidia-back /health/live -> $code"
+          test "$code" = "200"
+      - name: Frontend
+        run: |
+          code=$(curl -s -o /tmp/front -w "%{http_code}" --max-time 30 https://geomidia-front.vercel.app/)
+          echo "geomidia-front -> $code"
+          test "$code" = "200"
+      - name: Formulario publico
+        run: |
+          code=$(curl -s -o /tmp/form -w "%{http_code}" --max-time 30 https://formulario-theta-ochre.vercel.app/)
+          echo "formulario publico -> $code"
+          test "$code" = "200"
+      - name: API rota publica responde
+        run: |
+          code=$(curl -s -o /tmp/pub -w "%{http_code}" --max-time 30 -X POST https://geomidia-back.vercel.app/api/public/solicitacoes/veiculos-divulgacao/iniciar \
+            -H "Content-Type: application/json" -d '{"payload":{},"arquivos":[]}')
+          echo "POST /iniciar (esperado 4xx) -> $code"
+          test "$code" -ne "000"
+          test "$code" -ne "500"
