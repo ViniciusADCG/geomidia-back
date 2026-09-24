@@ -8,7 +8,7 @@ from app.core.config import Settings
 
 
 class DatabaseSettingsTests(unittest.TestCase):
-    def test_normalizes_supabase_url_for_asyncpg(self):
+    def test_normalizes_supabase_url_for_psycopg(self):
         settings = Settings(
             database_url=(
                 "postgresql://postgres.ref:secret@pooler.example.com:6543/postgres"
@@ -18,7 +18,7 @@ class DatabaseSettingsTests(unittest.TestCase):
 
         self.assertEqual(
             settings.database_url,
-            "postgresql+asyncpg://postgres.ref:secret@pooler.example.com:6543/postgres?ssl=require",
+            "postgresql+psycopg://postgres.ref:secret@pooler.example.com:6543/postgres?sslmode=require",
         )
         self.assertTrue(settings.uses_transaction_pooler)
 
@@ -30,7 +30,17 @@ class DatabaseSettingsTests(unittest.TestCase):
 
         self.assertEqual(
             settings.migration_database_url,
-            "postgresql+asyncpg://postgres:secret@db.example.com:5432/postgres",
+            "postgresql+psycopg://postgres:secret@db.example.com:5432/postgres",
+        )
+
+    def test_converts_existing_asyncpg_url_and_ssl_parameter(self):
+        settings = Settings(
+            database_url="postgresql+asyncpg://postgres.ref:secret@pooler.example.com:6543/postgres?ssl=require"
+        )
+
+        self.assertEqual(
+            settings.database_url,
+            "postgresql+psycopg://postgres.ref:secret@pooler.example.com:6543/postgres?sslmode=require",
         )
 
 
