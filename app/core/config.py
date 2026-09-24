@@ -8,7 +8,7 @@ from sqlalchemy.engine import make_url
 
 class Settings(BaseSettings):
     environment: str = "development"
-    database_url: str = "postgresql+asyncpg://geomidia:geomidia@localhost:5432/geomidia"
+    database_url: str = "postgresql+psycopg://geomidia:geomidia@localhost:5432/geomidia"
     database_direct_url: str | None = None
     cors_origins: str = "http://localhost:3000,http://localhost:5173"
     create_tables: bool = False
@@ -40,18 +40,17 @@ class Settings(BaseSettings):
         if not isinstance(value, str):
             return value
 
-        if value.startswith("postgres://"):
-            value = "postgresql+asyncpg://" + value[len("postgres://") :]
-
-        elif value.startswith("postgresql://"):
-            value = "postgresql+asyncpg://" + value[len("postgresql://") :]
+        for prefix in ("postgres://", "postgresql://", "postgresql+asyncpg://"):
+            if value.startswith(prefix):
+                value = "postgresql+psycopg://" + value[len(prefix) :]
+                break
 
         parts = urlsplit(value)
         query = dict(parse_qsl(parts.query, keep_blank_values=True))
-        ssl_mode = query.pop("sslmode", None)
+        ssl_mode = query.pop("ssl", None)
         query.pop("channel_binding", None)
-        if ssl_mode and "ssl" not in query:
-            query["ssl"] = ssl_mode
+        if ssl_mode and "sslmode" not in query:
+            query["sslmode"] = ssl_mode
 
         return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 

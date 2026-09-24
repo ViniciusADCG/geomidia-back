@@ -22,7 +22,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgresql+asyncpg://geomidia:geomidia@localhost:5432/geomidia_test
+      DATABASE_URL: postgresql+psycopg://geomidia:geomidia@localhost:5432/geomidia_test
       JWT_SECRET: ci-only-secret-with-more-than-32-characters
       CREATE_TABLES: "false"
     steps:
