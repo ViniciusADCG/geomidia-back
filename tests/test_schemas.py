@@ -8,8 +8,9 @@ from pydantic import ValidationError
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from app.db.models import ApplicationForm, MediaAsset
-from app.schemas import ApplicationFormCreate, ApplicationFormRead, MediaAssetCreate
+from app.api.routes.media_assets import asset_for_user
+from app.db.models import ApplicationForm, MediaAsset, User
+from app.schemas import ApplicationFormCreate, ApplicationFormRead, ApplicationFormUpdate, MediaAssetCreate
 
 
 def valid_asset(**overrides):
@@ -43,6 +44,10 @@ class MediaAssetSchemaTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             MediaAssetCreate.model_validate(valid_asset(latitude=-22))
 
+    def test_accepts_point_on_official_municipal_boundary(self):
+        asset = MediaAssetCreate.model_validate(valid_asset(latitude=-20.7408, longitude=-54.8163))
+        self.assertEqual(asset.latitude, -20.7408)
+
     def test_new_asset_defaults_to_new_processes(self):
         asset = MediaAssetCreate.model_validate(valid_asset())
         self.assertEqual(asset.status.value, "novos processos")
@@ -60,6 +65,7 @@ class ApplicationFormSchemaTests(unittest.TestCase):
     def valid_form(self, **overrides):
         data = {
             "company_responsible": "Empresa Teste",
+            "company_cnpj": "11222333000144",
             "municipal_registration": "12345",
             "property_registration": "67890",
             "latitude": -20.46,
@@ -89,6 +95,21 @@ class ApplicationFormSchemaTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             ApplicationFormCreate.model_validate(self.valid_form(latitude=-22))
 
+    def test_accepts_form_on_official_municipal_boundary(self):
+        form = ApplicationFormCreate.model_validate(
+            self.valid_form(latitude=-20.7408, longitude=-54.8163)
+        )
+        self.assertEqual(form.longitude, -54.8163)
+
+    def test_update_accepts_company_cnpj(self):
+        update = ApplicationFormUpdate.model_validate({"company_cnpj": "44555666000177"})
+
+        self.assertEqual(update.company_cnpj, "44555666000177")
+
+    def test_update_rejects_invalid_company_cnpj(self):
+        with self.assertRaises(ValidationError):
+            ApplicationFormUpdate.model_validate({"company_cnpj": "123"})
+
     def test_read_form_exposes_linked_process_status_and_expiration(self):
         now = datetime.now(UTC)
         asset = MediaAsset(
@@ -110,6 +131,38 @@ class ApplicationFormSchemaTests(unittest.TestCase):
 
         self.assertEqual(serialized.status.value, "novos processos")
         self.assertEqual(serialized.expiration_date, date(2027, 5, 20))
+
+    def test_media_asset_read_exposes_linked_company_fields(self):
+        now = datetime.now(UTC)
+        asset = MediaAsset(
+            id=uuid.uuid4(),
+            process_code="PROC-2026-998",
+            media_type="outdoor",
+            address="Av. Afonso Pena, 1000",
+            district="Centro",
+            latitude=-20.46,
+            longitude=-54.61,
+            area_m2=27,
+            bottom_height_m=5,
+            radius_meters=80,
+            status="novos processos",
+            created_at=now,
+            updated_at=now,
+        )
+        asset.application_form = ApplicationForm(
+            id=uuid.uuid4(),
+            asset_id=asset.id,
+            asset=asset,
+            created_at=now,
+            updated_at=now,
+            **self.valid_form(company_responsible="Empresa Filtro", company_cnpj="11222333000144"),
+        )
+        user = User(id=uuid.uuid4(), username="analista", full_name="Analista", password_hash="unused", role="analyst")
+
+        serialized = asset_for_user(asset, user)
+
+        self.assertEqual(serialized.company_responsible, "Empresa Filtro")
+        self.assertEqual(serialized.company_cnpj, "11222333000144")
 
 
 if __name__ == "__main__":

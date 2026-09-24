@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -24,6 +25,7 @@ def valid_public_payload(**overrides):
         "email": "requerente@example.com",
         "requerente": {
             "empresa": "Empresa Teste",
+            "cnpj": "11222333000144",
             "inscricaoMunicipal": "12345",
         },
         "localInstalacao": {
@@ -77,9 +79,34 @@ class PublicSubmissionTests(unittest.TestCase):
         form = application_form_from_public(valid_public_payload())
 
         self.assertEqual(form.company_responsible, "Empresa Teste")
+        self.assertEqual(form.company_cnpj, "11222333000144")
         self.assertEqual(form.property_registration, "12345678901")
         self.assertEqual(form.media_type.value, "outdoor")
         self.assertEqual(form.number_of_faces, "Duas")
+
+    def test_rejects_invalid_company_cnpj(self):
+        with self.assertRaises(ValidationError):
+            valid_public_payload(
+                requerente={
+                    "empresa": "Empresa Teste",
+                    "cnpj": "123",
+                    "inscricaoMunicipal": "12345",
+                }
+            )
+
+    def test_rejects_public_location_outside_municipality(self):
+        with self.assertRaises(ValidationError):
+            valid_public_payload(
+                localInstalacao={
+                    "inscricaoImobiliaria": "12345678901",
+                    "latitude": -20.40,
+                    "longitude": -54.79,
+                    "rua": "Avenida Afonso Pena",
+                    "numero": "1000",
+                    "bairro": "Centro",
+                    "cep": "79002-000",
+                }
+            )
 
     def test_accepts_required_attachment_manifest(self):
         validate_attachment_manifest(valid_manifest())

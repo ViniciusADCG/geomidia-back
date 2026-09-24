@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
-from app.core.config import get_settings
+from app.domain.campo_grande import is_inside_campo_grande
 
 
 class MediaType(str, Enum):
@@ -83,11 +83,8 @@ class MediaAssetBase(BaseModel):
     def validate_measurements_and_location(self) -> "MediaAssetBase":
         if self.top_height_m is not None and self.top_height_m < self.bottom_height_m:
             raise ValueError("A borda superior deve ser maior ou igual a borda inferior.")
-        settings = get_settings()
-        if not (settings.city_min_latitude <= self.latitude <= settings.city_max_latitude):
-            raise ValueError("Latitude fora da area operacional de Campo Grande.")
-        if not (settings.city_min_longitude <= self.longitude <= settings.city_max_longitude):
-            raise ValueError("Longitude fora da area operacional de Campo Grande.")
+        if not is_inside_campo_grande(self.latitude, self.longitude):
+            raise ValueError("Coordenadas fora do municipio de Campo Grande.")
         return self
 
 
@@ -122,6 +119,8 @@ class MediaAssetRead(MediaAssetBase):
 
     id: UUID
     process_code: str
+    company_responsible: str | None = None
+    company_cnpj: str | None = None
     radius_meters: int
     created_at: datetime
     updated_at: datetime
@@ -145,6 +144,7 @@ class ApplicationFormBase(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     company_responsible: str = Field(min_length=2, max_length=120)
+    company_cnpj: str | None = Field(default=None, pattern=r"^\d{14}$")
     municipal_registration: str = Field(min_length=1, max_length=60)
     property_registration: str = Field(min_length=1, max_length=60)
     latitude: float = Field(ge=-90, le=90)
@@ -163,6 +163,7 @@ class ApplicationFormBase(BaseModel):
 
     @field_validator(
         "company_responsible",
+        "company_cnpj",
         "municipal_registration",
         "property_registration",
         "street",
@@ -184,11 +185,8 @@ class ApplicationFormBase(BaseModel):
 
     @model_validator(mode="after")
     def validate_form_location(self) -> "ApplicationFormBase":
-        settings = get_settings()
-        if not (settings.city_min_latitude <= self.latitude <= settings.city_max_latitude):
-            raise ValueError("Latitude fora da area operacional de Campo Grande.")
-        if not (settings.city_min_longitude <= self.longitude <= settings.city_max_longitude):
-            raise ValueError("Longitude fora da area operacional de Campo Grande.")
+        if not is_inside_campo_grande(self.latitude, self.longitude):
+            raise ValueError("Coordenadas fora do municipio de Campo Grande.")
         return self
 
 
@@ -198,6 +196,7 @@ class ApplicationFormCreate(ApplicationFormBase):
 
 class ApplicationFormUpdate(BaseModel):
     company_responsible: str | None = Field(default=None, min_length=2, max_length=120)
+    company_cnpj: str | None = Field(default=None, pattern=r"^\d{14}$")
     municipal_registration: str | None = Field(default=None, min_length=1, max_length=60)
     property_registration: str | None = Field(default=None, min_length=1, max_length=60)
     latitude: float | None = Field(default=None, ge=-90, le=90)
@@ -240,6 +239,7 @@ class PublicApplicantInput(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     company: str = Field(alias="empresa", min_length=2, max_length=120)
+    company_cnpj: str = Field(alias="cnpj", pattern=r"^\d{14}$")
     municipal_registration: str = Field(alias="inscricaoMunicipal", min_length=1, max_length=60)
 
 
@@ -253,6 +253,12 @@ class PublicLocationInput(BaseModel):
     number: str = Field(alias="numero", min_length=1, max_length=30)
     district: str = Field(alias="bairro", min_length=2, max_length=120)
     postal_code: str = Field(alias="cep", pattern=r"^\d{5}-?\d{3}$")
+
+    @model_validator(mode="after")
+    def validate_municipal_boundary(self) -> "PublicLocationInput":
+        if not is_inside_campo_grande(self.latitude, self.longitude):
+            raise ValueError("Coordenadas fora do municipio de Campo Grande.")
+        return self
 
 
 class PublicVehicleInput(BaseModel):

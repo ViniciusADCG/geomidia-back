@@ -170,6 +170,7 @@ class ApplicationForm(Base):
         index=True,
     )
     company_responsible: Mapped[str] = mapped_column(String(120), nullable=False)
+    company_cnpj: Mapped[str | None] = mapped_column(String(14), nullable=True)
     municipal_registration: Mapped[str] = mapped_column(String(60), nullable=False)
     property_registration: Mapped[str] = mapped_column(String(60), nullable=False)
     street: Mapped[str] = mapped_column(String(180), nullable=False)

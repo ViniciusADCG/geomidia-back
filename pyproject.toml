@@ -32,3 +32,6 @@ ignore = ["E501", "B008"]
 
 [tool.vercel]
 entrypoint = "app.main:app"
+
+[tool.vercel.scripts]
+build = "alembic upgrade head && python -m app.cli bootstrap-admin"
