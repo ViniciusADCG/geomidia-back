@@ -6,11 +6,14 @@ from sqlalchemy.pool import NullPool
 
 from app.bootstrap import ensure_admin
 from app.core.config import get_settings
+from app.db.connection import engine_options_for
 
 
 async def bootstrap_admin() -> None:
     settings = get_settings()
-    engine = create_async_engine(settings.migration_database_url, poolclass=NullPool)
+    engine_options = engine_options_for(settings.migration_database_url)
+    engine_options["poolclass"] = NullPool
+    engine = create_async_engine(settings.migration_database_url, **engine_options)
     session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     try:
         async with session_factory() as session:

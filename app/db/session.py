@@ -2,26 +2,14 @@ from collections.abc import AsyncGenerator
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
+from app.db.connection import engine_options_for
 from app.db.models import Base
 
 settings = get_settings()
 
-engine_options: dict[str, object] = {
-    "pool_pre_ping": True,
-    "connect_args": {
-        "statement_cache_size": 0,
-        "prepared_statement_cache_size": 0,
-    },
-}
-if settings.uses_transaction_pooler:
-    engine_options.update(
-        poolclass=NullPool,
-    )
-
-engine = create_async_engine(settings.database_url, **engine_options)
+engine = create_async_engine(settings.database_url, **engine_options_for(settings.database_url))
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 
