@@ -1,7 +1,7 @@
 from functools import lru_cache
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from pydantic import field_validator, model_validator
+from pydantic import EmailStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     supabase_url: str | None = None
     supabase_service_role_key: str | None = None
     supabase_storage_bucket: str = "application-form-attachments"
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_email: EmailStr | None = None
+    smtp_use_ssl: bool = False
+    smtp_use_starttls: bool = True
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -76,6 +83,10 @@ class Settings(BaseSettings):
     @property
     def public_form_origin_list(self) -> list[str]:
         return [origin.strip().rstrip("/") for origin in self.public_form_origins.split(",") if origin.strip()]
+
+    @property
+    def receipt_email_configured(self) -> bool:
+        return bool(self.smtp_host and self.smtp_from_email)
 
     @model_validator(mode="after")
     def validate_production_security(self) -> "Settings":

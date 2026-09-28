@@ -300,6 +300,33 @@ class PublicSubmissionInitiate(BaseModel):
     attachments: list[PublicAttachmentInput] = Field(alias="arquivos", min_length=1, max_length=31)
 
 
+class RequirementResponsePayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    process_type: Literal["RESPOSTA_COMUNICADO_EXIGENCIA"] = Field(alias="tipoProcesso")
+    email: EmailStr
+    process_number: str = Field(alias="numeroProcesso", min_length=1, max_length=80)
+    notice_number: str = Field(alias="numeroComunicado", min_length=1, max_length=80)
+    acknowledgement: bool = Field(alias="ciente")
+    started_at: datetime = Field(alias="iniciadoEm")
+    website: str = Field(default="", max_length=200)
+
+    @field_validator("process_number", "notice_number")
+    @classmethod
+    def nonempty_reference(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Informe o número de referência.")
+        return value
+
+
+class RequirementResponseInitiate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    payload: RequirementResponsePayload
+    attachments: list[PublicAttachmentInput] = Field(alias="arquivos", min_length=1, max_length=10)
+
+
 class PublicUploadTarget(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -321,8 +348,36 @@ class PublicSubmissionFinalize(BaseModel):
 
 
 class PublicSubmissionResult(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     protocolo: str
     message: str
+    receipt_sent: bool = Field(alias="comprovanteEnviado")
+
+
+class RequirementResponseAttachmentRead(BaseModel):
+    index: int
+    filename: str
+    content_type: str
+    size_bytes: int
+
+
+class RequirementResponseRead(BaseModel):
+    id: UUID
+    protocol: str
+    process_number: str
+    notice_number: str
+    requester_email: EmailStr
+    finalized_at: datetime
+    receipt_sent: bool
+    attachments: list[RequirementResponseAttachmentRead]
+
+
+class RequirementResponsePage(BaseModel):
+    items: list[RequirementResponseRead]
+    total: int
+    limit: int
+    offset: int
 
 
 class AttachmentDownloadRead(BaseModel):

@@ -6,12 +6,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import (
     activities,
+    admin_requirement_responses,
     application_forms,
     auth,
     health,
     media_assets,
     media_rules,
     public_submissions,
+    requirement_responses,
     users,
 )
 from app.core.config import get_settings
@@ -61,3 +63,5 @@ app.include_router(users.router, prefix="/api")
 app.include_router(media_rules.router, prefix="/api")
 app.include_router(application_forms.router, prefix="/api")
 app.include_router(public_submissions.router, prefix="/api")
+app.include_router(requirement_responses.router, prefix="/api")
+app.include_router(admin_requirement_responses.router, prefix="/api")

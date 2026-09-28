@@ -1,5 +1,6 @@
 import asyncio
 import hmac
+import logging
 import re
 import secrets
 import unicodedata
@@ -8,15 +9,22 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes.application_forms import asset_data_from_form
-from app.api.routes.media_assets import asset_snapshot, log_activity, next_process_code
+from app.api.routes.media_assets import asset_snapshot, log_activity
 from app.api.routes.media_rules import active_rule_for_type, calculate_rule_radius
 from app.core.config import Settings, get_settings
-from app.db.models import ApplicationForm, ApplicationFormAttachment, MediaAsset, PublicSubmissionDraft
+from app.db.models import (
+    ApplicationForm,
+    ApplicationFormAttachment,
+    MediaAsset,
+    PublicProcessCounter,
+    PublicSubmissionDraft,
+)
 from app.db.session import get_session
 from app.schemas import (
     ActivityType,
@@ -30,9 +38,12 @@ from app.schemas import (
     PublicSubmissionResult,
     PublicUploadTarget,
 )
+from app.services.protocols import format_protocol, protocol_year
+from app.services.receipt import ReceiptAttachment, ReceiptData, generate_receipt_pdf, send_receipt_email
 from app.services.storage import StorageConfigurationError, StorageRequestError, SupabaseStorage
 
 router = APIRouter(prefix="/public/solicitacoes/veiculos-divulgacao", tags=["public-submissions"])
+logger = logging.getLogger(__name__)
 
 UPLOAD_RULES = {
     "alvaraLocalizacao": {"min": 1, "max": 5, "types": {"pdf", "image"}},
@@ -140,6 +151,91 @@ def storage_or_503(settings: Settings) -> SupabaseStorage:
         raise HTTPException(status_code=503, detail="Recebimento de anexos temporariamente indisponivel.") from exc
 
 
+async def next_public_process_code(session: AsyncSession, year: int) -> str:
+    """Allocate a VEI number independently from internal PROC numbers."""
+    existing_codes = await session.scalars(
+        select(MediaAsset.process_code).where(MediaAsset.process_code.like(f"VEI-%-{year}"))
+    )
+    existing_numbers = []
+    for code in existing_codes:
+        try:
+            existing_numbers.append(int(code.split("-")[1]))
+        except (IndexError, ValueError):
+            continue
+    first_value = max(existing_numbers, default=0) + 1
+    number = await session.scalar(
+        pg_insert(PublicProcessCounter)
+        .values(year=year, last_value=first_value)
+        .on_conflict_do_update(
+            index_elements=[PublicProcessCounter.year],
+            set_={"last_value": func.greatest(PublicProcessCounter.last_value, first_value - 1) + 1},
+        )
+        .returning(PublicProcessCounter.last_value)
+    )
+    return format_protocol("VEI", number, year)
+
+
+async def receipt_data_for_draft(draft: PublicSubmissionDraft, session: AsyncSession) -> ReceiptData | None:
+    form = await session.scalar(
+        select(ApplicationForm)
+        .join(MediaAsset, ApplicationForm.asset_id == MediaAsset.id)
+        .where(MediaAsset.process_code == draft.process_code)
+    )
+    if form is None:
+        return None
+    return ReceiptData(
+        process_code=draft.process_code or "",
+        finalized_at=draft.finalized_at or datetime.now(UTC),
+        requester_email=form.requester_email,
+        company=form.company_responsible,
+        company_cnpj=form.company_cnpj,
+        municipal_registration=form.municipal_registration,
+        property_registration=form.property_registration,
+        latitude=form.latitude,
+        longitude=form.longitude,
+        street=form.street,
+        number=form.number,
+        district=form.district,
+        postal_code=form.postal_code,
+        media_type=form.media_type,
+        attachments=tuple(
+            ReceiptAttachment(item.category, item.original_filename)
+            for item in sorted(form.attachments, key=lambda item: (item.category, item.original_filename))
+        ),
+    )
+
+
+async def send_finalized_receipt(draft: PublicSubmissionDraft, session: AsyncSession, settings: Settings) -> bool:
+    """Send once per draft when SMTP is available; allow a later finalize retry after failure."""
+    if draft.receipt_sent_at:
+        return True
+    if not settings.receipt_email_configured:
+        return False
+
+    receipt = await receipt_data_for_draft(draft, session)
+    if receipt is None:
+        logger.error("Application form missing for finalized process %s", draft.process_code)
+        return False
+    try:
+        pdf = generate_receipt_pdf(receipt)
+        await asyncio.to_thread(send_receipt_email, receipt, pdf, settings)
+    except Exception:
+        logger.exception("Failed to send receipt for process %s", draft.process_code)
+        return False
+
+    draft.receipt_sent_at = datetime.now(UTC)
+    await session.commit()
+    return True
+
+
+def result_for_receipt(process_code: str) -> PublicSubmissionResult:
+    return PublicSubmissionResult(
+        protocolo=process_code,
+        message="Solicitação recebida. Baixe o comprovante PDF abaixo e guarde o protocolo.",
+        receipt_sent=False,
+    )
+
+
 @router.post("/iniciar", response_model=PublicSubmissionInitiated, status_code=status.HTTP_201_CREATED)
 async def initiate_public_submission(
     body: PublicSubmissionInitiate,
@@ -222,10 +318,11 @@ async def finalize_public_submission(
     if draft is None or not hmac.compare_digest(draft.token_hash, sha256(body.token.encode()).hexdigest()):
         raise HTTPException(status_code=404, detail="Solicitacao nao encontrada.")
     if draft.finalized_at:
-        return PublicSubmissionResult(
-            protocolo=draft.process_code or "",
-            message="Solicitacao recebida anteriormente.",
-        )
+        if (draft.process_code or "").startswith("HESP-"):
+            raise HTTPException(status_code=404, detail="Solicitacao nao encontrada.")
+        return result_for_receipt(draft.process_code or "")
+    if draft.payload.get("process_type") != "PROCESSO_NOVO":
+        raise HTTPException(status_code=404, detail="Solicitacao nao encontrada.")
     if datetime.now(UTC) - draft.created_at.astimezone(UTC) > DRAFT_LIFETIME:
         raise HTTPException(status_code=410, detail="O envio expirou. Preencha o formulario novamente.")
 
@@ -246,9 +343,10 @@ async def finalize_public_submission(
     public_payload = PublicNewProcessPayload.model_validate(draft.payload)
     validated = application_form_from_public(public_payload)
     rule = await active_rule_for_type(validated.media_type.value, session)
+    finalized_at = datetime.now(UTC)
     asset = MediaAsset(
         **asset_data_from_form(validated),
-        process_code=await next_process_code(session),
+        process_code=await next_public_process_code(session, protocol_year(finalized_at)),
         radius_meters=calculate_rule_radius(rule, validated.area_m2),
         status=MediaStatus.new_process.value,
     )
@@ -281,12 +379,38 @@ async def finalize_public_submission(
             changes={"after": asset_snapshot(asset), "form_id": str(application_form.id), "source": "public-form"},
         )
     )
-    draft.finalized_at = datetime.now(UTC)
+    draft.finalized_at = finalized_at
     draft.process_code = asset.process_code
     draft.payload = {}
     draft.attachments = []
     await session.commit()
-    return PublicSubmissionResult(
-        protocolo=asset.process_code,
-        message="Solicitacao recebida e adicionada aos novos processos.",
+    return result_for_receipt(asset.process_code)
+
+
+@router.post("/{draft_id}/comprovante")
+async def download_public_receipt(
+    draft_id: uuid.UUID,
+    body: PublicSubmissionFinalize,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    validate_public_origin(request, get_settings())
+    draft = await session.scalar(select(PublicSubmissionDraft).where(PublicSubmissionDraft.id == draft_id))
+    if (
+        draft is None
+        or not draft.finalized_at
+        or (draft.process_code or "").startswith("HESP-")
+        or not hmac.compare_digest(draft.token_hash, sha256(body.token.encode()).hexdigest())
+    ):
+        raise HTTPException(status_code=404, detail="Comprovante não encontrado.")
+    receipt = await receipt_data_for_draft(draft, session)
+    if receipt is None:
+        raise HTTPException(status_code=404, detail="Comprovante não encontrado.")
+    return Response(
+        content=generate_receipt_pdf(receipt),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{draft.process_code}.pdf"',
+            "Cache-Control": "no-store",
+        },
     )
