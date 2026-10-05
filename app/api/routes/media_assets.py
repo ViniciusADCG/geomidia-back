@@ -78,6 +78,7 @@ def to_analysis_asset(asset: MediaAsset) -> AssetForAnalysis:
 
 def asset_snapshot(asset: MediaAsset) -> dict[str, Any]:
     return {
+        "official_process_code": asset.official_process_code,
         "media_type": asset.media_type,
         "address": asset.address,
         "district": asset.district,
@@ -383,6 +384,9 @@ async def update_media_asset(
     asset = await get_asset_or_404(asset_id, session)
     before = asset_snapshot(asset)
     update_data = payload.model_dump(exclude_unset=True, mode="json")
+    if "official_process_code" in update_data:
+        update_data["official_process_code"] = (update_data["official_process_code"] or "").strip() or None
+    official_process_code = update_data.pop("official_process_code", asset.official_process_code)
     ensure_direct_status_change_allowed(asset.status, update_data.get("status"))
 
     required_fields = {"media_type", "address", "district", "latitude", "longitude", "area_m2", "bottom_height_m", "status"}
@@ -406,6 +410,7 @@ async def update_media_asset(
 
     for field, value in final_data.items():
         setattr(asset, field, value)
+    asset.official_process_code = official_process_code
     rule = await active_rule_for_type(asset.media_type, session)
     asset.radius_meters = calculate_rule_radius(rule, asset.area_m2)
 
