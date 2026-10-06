@@ -5,7 +5,7 @@ import uuid
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,8 +18,10 @@ from app.api.routes.media_assets import (
     ensure_direct_status_change_allowed,
     expiration_window,
     start_media_asset_analysis,
+    update_media_asset,
 )
 from app.db.models import MediaAsset, User
+from app.schemas import MediaAssetUpdate
 
 
 def new_asset() -> MediaAsset:
@@ -42,6 +44,31 @@ def new_asset() -> MediaAsset:
 
 
 class MediaAssetWorkflowTests(unittest.TestCase):
+    def test_official_protocol_preserves_origin_and_is_logged(self):
+        asset = new_asset()
+        asset.process_code = "VEI-0110-2026"
+        user = User(id=uuid.uuid4(), username="admin", full_name="Admin", password_hash="unused", role="admin")
+        session = MagicMock(spec=AsyncSession)
+        session.get = AsyncMock(return_value=asset)
+        session.commit = AsyncMock()
+        session.refresh = AsyncMock()
+        request = SimpleNamespace(state=SimpleNamespace(request_id="request-123"))
+
+        with (
+            patch("app.api.routes.media_assets.active_rule_for_type", new=AsyncMock(return_value=object())),
+            patch("app.api.routes.media_assets.calculate_rule_radius", return_value=80),
+        ):
+            result = asyncio.run(update_media_asset(
+                asset.id, MediaAssetUpdate(official_process_code=" 12345/2026 "), request, session, user,
+            ))
+
+        self.assertEqual(asset.process_code, "VEI-0110-2026")
+        self.assertEqual(result.official_process_code, "12345/2026")
+        self.assertEqual(session.add.call_args.args[0].changes["official_process_code"], {
+            "before": None, "after": "12345/2026",
+        })
+        session.commit.assert_awaited_once()
+
     def test_expiration_window_includes_today_and_the_ninetieth_day(self):
         reference_date, window_end_date = expiration_window(date(2026, 8, 20))
 

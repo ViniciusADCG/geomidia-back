@@ -97,6 +97,7 @@ class MediaAssetCreate(MediaAssetBase):
 
 
 class MediaAssetUpdate(BaseModel):
+    official_process_code: str | None = Field(default=None, max_length=80)
     media_type: MediaType | None = None
     address: str | None = Field(default=None, min_length=3, max_length=255)
     district: str | None = Field(default=None, min_length=2, max_length=120)
@@ -119,6 +120,7 @@ class MediaAssetRead(MediaAssetBase):
 
     id: UUID
     process_code: str
+    official_process_code: str | None = None
     company_responsible: str | None = None
     company_cnpj: str | None = None
     radius_meters: int
