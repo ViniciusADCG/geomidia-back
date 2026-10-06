@@ -57,6 +57,22 @@ class ProcessCounter(Base):
     last_value: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+class PublicProcessCounter(Base):
+    __tablename__ = "public_process_counters"
+    __table_args__ = {"schema": "public"}
+
+    year: Mapped[int] = mapped_column(Integer, primary_key=True)
+    last_value: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class RequirementResponseCounter(Base):
+    __tablename__ = "requirement_response_counters"
+    __table_args__ = {"schema": "public"}
+
+    year: Mapped[int] = mapped_column(Integer, primary_key=True)
+    last_value: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class MediaRule(Base):
     __tablename__ = "media_rules"
 
@@ -260,6 +276,7 @@ class PublicSubmissionDraft(Base):
     process_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, server_default=func.now())
     finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    receipt_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("ix_public_submission_drafts_rate_limit", "client_fingerprint", "created_at"),
