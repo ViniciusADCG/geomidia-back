@@ -8,6 +8,12 @@ from app.db.models import ActivityLog, ApplicationForm, Base, MediaAsset
 
 
 class ModelSchemaTests(unittest.TestCase):
+    def test_new_vehicle_measurements_are_nullable_and_classification_is_stored(self):
+        for model in (MediaAsset, ApplicationForm):
+            self.assertTrue(model.__table__.c.area_m2.nullable)
+            self.assertTrue(model.__table__.c.bottom_height_m.nullable)
+            self.assertTrue(model.__table__.c.area_rule_classification.nullable)
+
     def test_all_application_tables_use_public_schema(self):
         self.assertTrue(Base.metadata.tables)
         self.assertTrue(all(table.schema == "public" for table in Base.metadata.tables.values()))

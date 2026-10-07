@@ -85,6 +85,7 @@ def asset_snapshot(asset: MediaAsset) -> dict[str, Any]:
         "latitude": asset.latitude,
         "longitude": asset.longitude,
         "area_m2": asset.area_m2,
+        "area_rule_classification": asset.area_rule_classification,
         "width_m": asset.width_m,
         "bottom_height_m": asset.bottom_height_m,
         "top_height_m": asset.top_height_m,
@@ -353,7 +354,7 @@ async def create_media_asset(
     data["expiration_date"] = payload.expiration_date
     data["process_code"] = await next_process_code(session)
     rule = await active_rule_for_type(payload.media_type.value, session)
-    data["radius_meters"] = calculate_rule_radius(rule, payload.area_m2)
+    data["radius_meters"] = calculate_rule_radius(rule, payload.area_m2, payload.area_rule_classification)
 
     asset = MediaAsset(**data)
     session.add(asset)
@@ -389,7 +390,7 @@ async def update_media_asset(
     official_process_code = update_data.pop("official_process_code", asset.official_process_code)
     ensure_direct_status_change_allowed(asset.status, update_data.get("status"))
 
-    required_fields = {"media_type", "address", "district", "latitude", "longitude", "area_m2", "bottom_height_m", "status"}
+    required_fields = {"media_type", "address", "district", "latitude", "longitude", "status"}
     invalid_nulls = required_fields.intersection(field for field, value in update_data.items() if value is None)
     if invalid_nulls:
         raise HTTPException(
@@ -412,7 +413,7 @@ async def update_media_asset(
         setattr(asset, field, value)
     asset.official_process_code = official_process_code
     rule = await active_rule_for_type(asset.media_type, session)
-    asset.radius_meters = calculate_rule_radius(rule, asset.area_m2)
+    asset.radius_meters = calculate_rule_radius(rule, asset.area_m2, asset.area_rule_classification)
 
     if asset.status == MediaStatus.approved.value:
         await session.execute(select(func.pg_advisory_xact_lock(APPROVAL_LOCK_ID)))

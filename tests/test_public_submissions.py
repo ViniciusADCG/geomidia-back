@@ -1,21 +1,28 @@
+import asyncio
 import sys
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from fastapi import HTTPException
 from pydantic import ValidationError
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
+from app.api.routes.application_forms import asset_data_from_form
 from app.api.routes.public_submissions import (
     application_form_from_public,
+    public_vehicle_rules,
     safe_filename,
     validate_attachment_manifest,
+    validate_public_vehicle_rule,
     validate_submission_timing,
 )
 from app.core.config import Settings
-from app.schemas import PublicAttachmentInput, PublicNewProcessPayload
+from app.db.models import ApplicationForm, MediaAsset, MediaRule
+from app.schemas import AreaRuleClassification, PublicAttachmentInput, PublicNewProcessPayload
 from app.services.storage import StorageConfigurationError, SupabaseStorage
 
 
@@ -75,6 +82,55 @@ def valid_manifest():
 
 
 class PublicSubmissionTests(unittest.TestCase):
+    def test_public_rules_expose_active_area_threshold(self):
+        rule = MediaRule(media_type="painel de led", area_threshold_m2=7, is_active=True)
+        session = SimpleNamespace(scalars=AsyncMock(return_value=[rule]))
+        self.assertEqual(
+            asyncio.run(public_vehicle_rules(session)),
+            [{"tipo": "painel de led", "limiteAreaM2": 7}],
+        )
+
+    def test_fixed_radius_vehicle_needs_no_measurements_or_classification(self):
+        payload = valid_public_payload(veiculoDivulgacao={"tipo": "outdoor", "quantidadeFaces": "Duas"})
+        rule = MediaRule(base_radius_meters=80, area_threshold_m2=None, radius_above_threshold_meters=None)
+        validate_public_vehicle_rule(rule, payload)
+        form = application_form_from_public(payload)
+        self.assertIsNone(form.area_m2)
+        self.assertIsNone(form.bottom_height_m)
+        self.assertIsNone(form.area_rule_classification)
+
+    def test_area_classification_reaches_both_persisted_models(self):
+        rule = MediaRule(base_radius_meters=250, area_threshold_m2=5, radius_above_threshold_meters=1000)
+        for value in ("within_limit", "above_limit"):
+            with self.subTest(value=value):
+                payload = valid_public_payload(veiculoDivulgacao={
+                    "tipo": "painel de led", "quantidadeFaces": "Duas", "areaRuleClassification": value,
+                })
+                payload = PublicNewProcessPayload.model_validate(payload.model_dump(mode="json"))
+                validate_public_vehicle_rule(rule, payload)
+                form = application_form_from_public(payload)
+                form_row = ApplicationForm(**form.model_dump(mode="json", exclude={"expiration_date"}))
+                asset_row = MediaAsset(**asset_data_from_form(form))
+                self.assertIsNone(form_row.area_m2)
+                self.assertIsNone(asset_row.bottom_height_m)
+                self.assertEqual(form.area_rule_classification, AreaRuleClassification(value))
+                self.assertEqual(form_row.area_rule_classification, value)
+                self.assertEqual(asset_row.area_rule_classification, value)
+
+    def test_area_rule_rejects_missing_classification(self):
+        rule = MediaRule(base_radius_meters=250, area_threshold_m2=5, radius_above_threshold_meters=1000)
+        payload = valid_public_payload(veiculoDivulgacao={"tipo": "painel de led", "quantidadeFaces": "Duas"})
+        with self.assertRaises(HTTPException):
+            validate_public_vehicle_rule(rule, payload)
+
+    def test_fixed_rule_rejects_unneeded_classification(self):
+        rule = MediaRule(base_radius_meters=80, area_threshold_m2=None, radius_above_threshold_meters=None)
+        payload = valid_public_payload(veiculoDivulgacao={
+            "tipo": "outdoor", "quantidadeFaces": "Duas", "areaRuleClassification": "within_limit",
+        })
+        with self.assertRaises(HTTPException):
+            validate_public_vehicle_rule(rule, payload)
+
     def test_maps_public_payload_to_application_form(self):
         form = application_form_from_public(valid_public_payload())
 
