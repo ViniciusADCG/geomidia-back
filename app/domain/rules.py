@@ -13,7 +13,7 @@ class AssetForAnalysis:
     status: str
     latitude: float
     longitude: float
-    area_m2: float
+    area_m2: float | None
     radius_meters: int
 
 

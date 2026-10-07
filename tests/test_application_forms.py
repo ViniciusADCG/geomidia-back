@@ -100,6 +100,8 @@ class ApplicationFormPatchTests(unittest.TestCase):
         self.assertEqual(serialized.company_cnpj, "44555666000177")
         self.assertEqual(application_form.asset_id, original_asset_id)
         self.assertIs(application_form.asset, asset)
+        self.assertEqual((application_form.area_m2, application_form.bottom_height_m), (12, 4))
+        self.assertEqual((asset.area_m2, asset.bottom_height_m), (12, 4))
         session.commit.assert_awaited_once()
         session.refresh.assert_awaited_once_with(application_form)
 
@@ -124,6 +126,26 @@ class ApplicationFormPatchTests(unittest.TestCase):
         self.assertEqual(application_form.asset_id, original_asset_id)
         self.assertIs(application_form.asset, asset)
         session.commit.assert_awaited_once()
+
+    def test_patch_classified_form_preserves_classification_and_null_measurements(self):
+        application_form, asset = linked_form()
+        application_form.area_m2 = asset.area_m2 = None
+        application_form.bottom_height_m = asset.bottom_height_m = None
+        application_form.area_rule_classification = asset.area_rule_classification = "above_limit"
+        session, request, user = update_context(application_form)
+        with (
+            patch("app.api.routes.application_forms.active_rule_for_type", new=AsyncMock(return_value=object())),
+            patch("app.api.routes.application_forms.calculate_rule_radius", return_value=1000) as radius,
+        ):
+            asyncio.run(update_application_form(
+                application_form.id, ApplicationFormUpdate(company_responsible="Empresa Nova"),
+                request, session, user,
+            ))
+        radius.assert_called_once()
+        self.assertIsNone(radius.call_args.args[1])
+        self.assertEqual(radius.call_args.args[2], "above_limit")
+        self.assertEqual((asset.area_m2, asset.bottom_height_m), (None, None))
+        self.assertEqual(asset.area_rule_classification, "above_limit")
 
 
 class ApplicationFormRouteTests(unittest.TestCase):

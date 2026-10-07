@@ -22,6 +22,7 @@ from app.db.models import (
     ApplicationForm,
     ApplicationFormAttachment,
     MediaAsset,
+    MediaRule,
     PublicProcessCounter,
     PublicSubmissionDraft,
 )
@@ -136,12 +137,29 @@ def application_form_from_public(payload: PublicNewProcessPayload) -> Applicatio
             "postal_code": payload.location.postal_code,
             "media_type": payload.vehicle.media_type,
             "area_m2": payload.vehicle.area_m2,
+            "area_rule_classification": payload.vehicle.area_rule_classification,
             "bottom_height_m": payload.vehicle.bottom_height_m,
             "number_of_faces": payload.vehicle.number_of_faces,
             "requester_email": payload.email,
             "attachment_links": None,
         }
     )
+
+
+def validate_public_vehicle_rule(rule: MediaRule, payload: PublicNewProcessPayload) -> None:
+    classification = payload.vehicle.area_rule_classification
+    if rule.area_threshold_m2 is None and classification is not None:
+        raise HTTPException(status_code=422, detail="Este tipo de veiculo nao usa classificacao de area.")
+    calculate_rule_radius(rule, payload.vehicle.area_m2, classification)
+
+
+@router.get("/regras", response_model=list[dict])
+async def public_vehicle_rules(session: AsyncSession = Depends(get_session)) -> list[dict]:
+    rules = await session.scalars(select(MediaRule).where(MediaRule.is_active.is_(True)))
+    return [
+        {"tipo": rule.media_type, "limiteAreaM2": rule.area_threshold_m2}
+        for rule in rules
+    ]
 
 
 def storage_or_503(settings: Settings) -> SupabaseStorage:
@@ -246,6 +264,8 @@ async def initiate_public_submission(
     validate_public_origin(request, settings)
     validate_submission_timing(body.payload)
     validate_attachment_manifest(body.attachments)
+    rule = await active_rule_for_type(body.payload.vehicle.media_type.value, session)
+    validate_public_vehicle_rule(rule, body.payload)
 
     fingerprint = client_fingerprint(request, settings)
     recent_count = await session.scalar(
@@ -343,11 +363,12 @@ async def finalize_public_submission(
     public_payload = PublicNewProcessPayload.model_validate(draft.payload)
     validated = application_form_from_public(public_payload)
     rule = await active_rule_for_type(validated.media_type.value, session)
+    validate_public_vehicle_rule(rule, public_payload)
     finalized_at = datetime.now(UTC)
     asset = MediaAsset(
         **asset_data_from_form(validated),
         process_code=await next_public_process_code(session, protocol_year(finalized_at)),
-        radius_meters=calculate_rule_radius(rule, validated.area_m2),
+        radius_meters=calculate_rule_radius(rule, validated.area_m2, validated.area_rule_classification),
         status=MediaStatus.new_process.value,
     )
     session.add(asset)

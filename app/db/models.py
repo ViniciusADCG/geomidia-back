@@ -125,9 +125,10 @@ class MediaAsset(Base):
         Computed("ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)", persisted=True),
         nullable=False,
     )
-    area_m2: Mapped[float] = mapped_column(Float, nullable=False)
+    area_m2: Mapped[float | None] = mapped_column(Float, nullable=True)
+    area_rule_classification: Mapped[str | None] = mapped_column(String(16), nullable=True)
     width_m: Mapped[float | None] = mapped_column(Float, nullable=True)
-    bottom_height_m: Mapped[float] = mapped_column(Float, nullable=False)
+    bottom_height_m: Mapped[float | None] = mapped_column(Float, nullable=True)
     top_height_m: Mapped[float | None] = mapped_column(Float, nullable=True)
     expiration_date: Mapped[date | None] = mapped_column(Date, index=True, nullable=True)
     radius_meters: Mapped[int] = mapped_column(nullable=False)
@@ -167,6 +168,8 @@ class MediaAsset(Base):
         CheckConstraint("latitude between -90 and 90", name="ck_media_assets_latitude"),
         CheckConstraint("longitude between -180 and 180", name="ck_media_assets_longitude"),
         CheckConstraint("area_m2 > 0", name="ck_media_assets_area"),
+        CheckConstraint("area_rule_classification is null or area_rule_classification in ('within_limit', 'above_limit')", name="ck_media_assets_area_rule_classification"),
+        CheckConstraint("area_m2 is null or area_rule_classification is null", name="ck_media_assets_area_source"),
         CheckConstraint("width_m is null or width_m > 0", name="ck_media_assets_width"),
         CheckConstraint("bottom_height_m >= 0", name="ck_media_assets_bottom_height"),
         CheckConstraint("top_height_m is null or top_height_m >= bottom_height_m", name="ck_media_assets_height_order"),
@@ -197,8 +200,9 @@ class ApplicationForm(Base):
     latitude: Mapped[float] = mapped_column(Float, nullable=False)
     longitude: Mapped[float] = mapped_column(Float, nullable=False)
     media_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    area_m2: Mapped[float] = mapped_column(Float, nullable=False)
-    bottom_height_m: Mapped[float] = mapped_column(Float, nullable=False)
+    area_m2: Mapped[float | None] = mapped_column(Float, nullable=True)
+    area_rule_classification: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    bottom_height_m: Mapped[float | None] = mapped_column(Float, nullable=True)
     number_of_faces: Mapped[str | None] = mapped_column(String(30), nullable=True)
     requester_email: Mapped[str] = mapped_column(String(160), nullable=False)
     attachment_links: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -236,6 +240,8 @@ class ApplicationForm(Base):
         CheckConstraint("latitude between -90 and 90", name="ck_application_forms_latitude"),
         CheckConstraint("longitude between -180 and 180", name="ck_application_forms_longitude"),
         CheckConstraint("area_m2 > 0", name="ck_application_forms_area"),
+        CheckConstraint("area_rule_classification is null or area_rule_classification in ('within_limit', 'above_limit')", name="ck_application_forms_area_rule_classification"),
+        CheckConstraint("area_m2 is null or area_rule_classification is null", name="ck_application_forms_area_source"),
         CheckConstraint("bottom_height_m >= 0", name="ck_application_forms_bottom_height"),
         {"schema": "public"},
     )
