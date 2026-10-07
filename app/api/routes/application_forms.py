@@ -31,6 +31,7 @@ def asset_data_from_form(form: ApplicationFormBase) -> dict[str, Any]:
         "latitude": form.latitude,
         "longitude": form.longitude,
         "area_m2": form.area_m2,
+        "area_rule_classification": form.area_rule_classification.value if form.area_rule_classification else None,
         "bottom_height_m": form.bottom_height_m,
         "expiration_date": form.expiration_date,
         "attachment_links": form.attachment_links,
@@ -113,7 +114,7 @@ async def update_application_form(
     for field, value in asset_values.items():
         setattr(application_form.asset, field, value)
     rule = await active_rule_for_type(validated.media_type.value, session)
-    application_form.asset.radius_meters = calculate_rule_radius(rule, validated.area_m2)
+    application_form.asset.radius_meters = calculate_rule_radius(rule, validated.area_m2, validated.area_rule_classification)
 
     after = asset_snapshot(application_form.asset)
     changed = {

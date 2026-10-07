@@ -28,6 +28,14 @@ def valid_asset(**overrides):
 
 
 class MediaAssetSchemaTests(unittest.TestCase):
+    def test_accepts_manual_fixed_radius_asset_without_measurements(self):
+        data = valid_asset()
+        del data["area_m2"]
+        del data["bottom_height_m"]
+        asset = MediaAssetCreate.model_validate(data)
+        self.assertIsNone(asset.area_m2)
+        self.assertIsNone(asset.bottom_height_m)
+
     def test_accepts_modular_electronic_panel(self):
         asset = MediaAssetCreate.model_validate(valid_asset(media_type="painel eletronico modular"))
         self.assertEqual(asset.media_type.value, "painel eletronico modular")

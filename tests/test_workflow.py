@@ -64,6 +64,7 @@ class MediaAssetWorkflowTests(unittest.TestCase):
 
         self.assertEqual(asset.process_code, "VEI-0110-2026")
         self.assertEqual(result.official_process_code, "12345/2026")
+        self.assertEqual((asset.area_m2, asset.bottom_height_m), (27, 5))
         self.assertEqual(session.add.call_args.args[0].changes["official_process_code"], {
             "before": None, "after": "12345/2026",
         })

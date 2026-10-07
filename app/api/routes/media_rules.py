@@ -8,19 +8,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import require_roles
 from app.db.models import MediaAsset, MediaRule, User
 from app.db.session import get_session
-from app.schemas import MediaRuleBase, MediaRuleCreate, MediaRuleRead, MediaRuleUpdate
+from app.schemas import AreaRuleClassification, MediaRuleBase, MediaRuleCreate, MediaRuleRead, MediaRuleUpdate
 
 router = APIRouter(prefix="/media-rules", tags=["media-rules"])
 MEDIA_RULE_READ_ROLES = ("admin", "analyst", "viewer")
 
 
-def calculate_rule_radius(rule: MediaRule, area_m2: float) -> int:
-    if (
-        rule.area_threshold_m2 is not None
-        and rule.radius_above_threshold_meters is not None
-        and area_m2 > rule.area_threshold_m2
-    ):
-        return rule.radius_above_threshold_meters
+def calculate_rule_radius(
+    rule: MediaRule,
+    area_m2: float | None,
+    classification: AreaRuleClassification | str | None = None,
+) -> int:
+    if rule.area_threshold_m2 is not None and rule.radius_above_threshold_meters is not None:
+        if area_m2 is not None:
+            return rule.radius_above_threshold_meters if area_m2 > rule.area_threshold_m2 else rule.base_radius_meters
+        if classification == AreaRuleClassification.above_limit:
+            return rule.radius_above_threshold_meters
+        if classification != AreaRuleClassification.within_limit:
+            raise HTTPException(status_code=422, detail="Classificacao de area obrigatoria para esta regra.")
     return rule.base_radius_meters
 
 
@@ -39,7 +44,9 @@ async def active_rule_for_type(media_type: str, session: AsyncSession) -> MediaR
 async def refresh_asset_radii(rule: MediaRule, session: AsyncSession) -> None:
     assets = await session.scalars(select(MediaAsset).where(MediaAsset.media_type == rule.media_type))
     for asset in assets:
-        asset.radius_meters = calculate_rule_radius(rule, asset.area_m2)
+        if rule.area_threshold_m2 is not None and asset.area_m2 is None and asset.area_rule_classification is None:
+            continue
+        asset.radius_meters = calculate_rule_radius(rule, asset.area_m2, asset.area_rule_classification)
 
 
 async def get_rule_or_404(rule_id: UUID, session: AsyncSession) -> MediaRule:

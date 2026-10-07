@@ -18,6 +18,11 @@ class MediaType(str, Enum):
     empena_de_led = "empena de led"
 
 
+class AreaRuleClassification(str, Enum):
+    within_limit = "within_limit"
+    above_limit = "above_limit"
+
+
 class MediaStatus(str, Enum):
     new_process = "novos processos"
     approved = "aprovado"
@@ -58,9 +63,10 @@ class MediaAssetBase(BaseModel):
     district: str = Field(min_length=2, max_length=120)
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
-    area_m2: float = Field(gt=0)
+    area_m2: float | None = Field(default=None, gt=0)
+    area_rule_classification: AreaRuleClassification | None = None
     width_m: float | None = Field(default=None, gt=0)
-    bottom_height_m: float = Field(ge=0)
+    bottom_height_m: float | None = Field(default=None, ge=0)
     top_height_m: float | None = Field(default=None, ge=0)
     expiration_date: date | None = None
     status: MediaStatus = MediaStatus.new_process
@@ -81,8 +87,10 @@ class MediaAssetBase(BaseModel):
 
     @model_validator(mode="after")
     def validate_measurements_and_location(self) -> "MediaAssetBase":
-        if self.top_height_m is not None and self.top_height_m < self.bottom_height_m:
+        if self.top_height_m is not None and self.bottom_height_m is not None and self.top_height_m < self.bottom_height_m:
             raise ValueError("A borda superior deve ser maior ou igual a borda inferior.")
+        if self.area_m2 is not None and self.area_rule_classification is not None:
+            raise ValueError("Informe area real ou classificacao, nao ambos.")
         if not is_inside_campo_grande(self.latitude, self.longitude):
             raise ValueError("Coordenadas fora do municipio de Campo Grande.")
         return self
@@ -104,6 +112,7 @@ class MediaAssetUpdate(BaseModel):
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
     area_m2: float | None = Field(default=None, gt=0)
+    area_rule_classification: AreaRuleClassification | None = None
     width_m: float | None = Field(default=None, gt=0)
     bottom_height_m: float | None = Field(default=None, ge=0)
     top_height_m: float | None = Field(default=None, ge=0)
@@ -156,8 +165,9 @@ class ApplicationFormBase(BaseModel):
     district: str = Field(min_length=2, max_length=120)
     postal_code: str = Field(pattern=r"^\d{5}-?\d{3}$")
     media_type: MediaType
-    area_m2: float = Field(gt=0)
-    bottom_height_m: float = Field(ge=0)
+    area_m2: float | None = Field(default=None, gt=0)
+    area_rule_classification: AreaRuleClassification | None = None
+    bottom_height_m: float | None = Field(default=None, ge=0)
     number_of_faces: str | None = Field(default=None, max_length=30)
     expiration_date: date | None = None
     requester_email: EmailStr
@@ -187,6 +197,8 @@ class ApplicationFormBase(BaseModel):
 
     @model_validator(mode="after")
     def validate_form_location(self) -> "ApplicationFormBase":
+        if self.area_m2 is not None and self.area_rule_classification is not None:
+            raise ValueError("Informe area real ou classificacao, nao ambos.")
         if not is_inside_campo_grande(self.latitude, self.longitude):
             raise ValueError("Coordenadas fora do municipio de Campo Grande.")
         return self
@@ -209,6 +221,7 @@ class ApplicationFormUpdate(BaseModel):
     postal_code: str | None = Field(default=None, pattern=r"^\d{5}-?\d{3}$")
     media_type: MediaType | None = None
     area_m2: float | None = Field(default=None, gt=0)
+    area_rule_classification: AreaRuleClassification | None = None
     bottom_height_m: float | None = Field(default=None, ge=0)
     number_of_faces: str | None = Field(default=None, max_length=30)
     expiration_date: date | None = None
@@ -268,8 +281,15 @@ class PublicVehicleInput(BaseModel):
 
     media_type: MediaType = Field(alias="tipo")
     number_of_faces: str = Field(alias="quantidadeFaces", min_length=1, max_length=30)
-    area_m2: float = Field(alias="areaM2", gt=0)
-    bottom_height_m: float = Field(alias="alturaBordaInferiorM", ge=0)
+    area_m2: float | None = Field(default=None, alias="areaM2", gt=0)
+    area_rule_classification: AreaRuleClassification | None = Field(default=None, alias="areaRuleClassification")
+    bottom_height_m: float | None = Field(default=None, alias="alturaBordaInferiorM", ge=0)
+
+    @model_validator(mode="after")
+    def validate_area_source(self) -> "PublicVehicleInput":
+        if self.area_m2 is not None and self.area_rule_classification is not None:
+            raise ValueError("Informe area real ou classificacao, nao ambos.")
+        return self
 
 
 class PublicNewProcessPayload(BaseModel):
