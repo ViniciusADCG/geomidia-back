@@ -4,14 +4,19 @@ import unittest
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 from fastapi import HTTPException
+from httpx import ASGITransport, AsyncClient
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from app.api.routes.media_assets import asset_for_user
-from app.core.security import require_roles
+from app.core.security import get_current_user, require_roles
 from app.db.models import MediaAsset, User
+from app.db.session import get_session
+from app.main import app
 
 
 def user_with_role(role: str) -> User:
@@ -52,3 +57,66 @@ class PermissionTests(unittest.TestCase):
         result = asset_for_user(asset, user_with_role("viewer"))
         self.assertIsNone(result.contact_name)
         self.assertIsNone(result.contact_email)
+
+
+class DeleteMediaAssetPermissionTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncTearDown(self):
+        app.dependency_overrides.clear()
+
+    async def test_analyst_can_delete_asset(self):
+        now = datetime.now(UTC)
+        asset = MediaAsset(
+            id=uuid.uuid4(),
+            process_code="PROC-2026-999",
+            media_type="outdoor",
+            address="Av. Teste, 100",
+            district="Centro",
+            latitude=-20.46,
+            longitude=-54.61,
+            area_m2=27,
+            bottom_height_m=5,
+            radius_meters=80,
+            status="análise",
+            created_at=now,
+            updated_at=now,
+        )
+        session = SimpleNamespace(
+            get=AsyncMock(return_value=asset),
+            add=Mock(),
+            delete=AsyncMock(),
+            commit=AsyncMock(),
+        )
+
+        async def analyst():
+            return SimpleNamespace(id=uuid.uuid4(), role="analyst")
+
+        async def fake_session():
+            yield session
+
+        app.dependency_overrides[get_current_user] = analyst
+        app.dependency_overrides[get_session] = fake_session
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.delete(f"/api/media-assets/{asset.id}")
+
+        self.assertEqual(response.status_code, 204)
+        session.get.assert_awaited_once()
+        session.delete.assert_awaited_once_with(asset)
+        session.commit.assert_awaited_once()
+        session.add.assert_called_once()
+
+    async def test_viewer_cannot_reach_delete_route(self):
+        session = SimpleNamespace(get=AsyncMock(return_value=None))
+
+        async def viewer():
+            return SimpleNamespace(role="viewer")
+
+        async def fake_session():
+            yield session
+
+        app.dependency_overrides[get_current_user] = viewer
+        app.dependency_overrides[get_session] = fake_session
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.delete(f"/api/media-assets/{uuid.uuid4()}")
+
+        self.assertEqual(response.status_code, 403)
+        session.get.assert_not_awaited()
