@@ -466,7 +466,7 @@ async def delete_media_asset(
     asset_id: UUID,
     request: Request,
     session: AsyncSession = Depends(get_session),
-    current_user: User = Depends(require_roles("admin")),
+    current_user: User = Depends(require_roles(*WRITE_ROLES)),
 ) -> None:
     asset = await get_asset_or_404(asset_id, session)
     session.add(
