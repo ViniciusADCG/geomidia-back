@@ -18,6 +18,8 @@ from app.schemas import (
     ConflictAnalysisRead,
     MapAssetPage,
     MapAssetSummary,
+    MapCluster,
+    MapClusterPage,
     MediaAssetBase,
     MediaAssetCreate,
     MediaAssetPage,
@@ -283,6 +285,38 @@ async def map_index_prefilter(session: AsyncSession, viewport):
     return MediaAsset.geom.op("&&")(func.ST_Expand(viewport, max_radius / 50_000))
 
 
+async def map_viewport_filters(
+    session: AsyncSession,
+    north: float,
+    south: float,
+    east: float,
+    west: float,
+    media_type: MediaType | None,
+    status_filter: MediaStatus | None,
+    company: str | None,
+    user_role: str,
+):
+    if north <= south or east <= west:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A viewport exige north > south e east > west; antimeridiano não é suportado.",
+        )
+    viewport = func.ST_MakeEnvelope(west, south, east, north, 4326)
+    filters = media_asset_filters(
+        search=None,
+        media_type=media_type,
+        status_filter=status_filter,
+        district=None,
+        company=company,
+        user_role=user_role,
+    )
+    prefilter = await map_index_prefilter(session, viewport)
+    if prefilter is not None:
+        filters.append(prefilter)
+    filters.append(map_spatial_match(north, south, east, west))
+    return filters
+
+
 @router.get("", response_model=MediaAssetPage)
 async def list_media_assets(
     search: str | None = Query(default=None, max_length=120),
@@ -333,25 +367,9 @@ async def list_map_assets(
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(require_roles(*READ_ROLES)),
 ) -> MapAssetPage:
-    if north <= south or east <= west:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="A viewport exige north > south e east > west; antimeridiano não é suportado.",
-        )
-
-    viewport = func.ST_MakeEnvelope(west, south, east, north, 4326)
-    filters = media_asset_filters(
-        search=None,
-        media_type=media_type,
-        status_filter=status_filter,
-        district=None,
-        company=company,
-        user_role=current_user.role,
+    filters = await map_viewport_filters(
+        session, north, south, east, west, media_type, status_filter, company, current_user.role,
     )
-    prefilter = await map_index_prefilter(session, viewport)
-    if prefilter is not None:
-        filters.append(prefilter)
-    filters.append(map_spatial_match(north, south, east, west))
 
     total = await session.scalar(select(func.count()).select_from(MediaAsset).where(*filters)) or 0
     if total > MAP_MAX_ITEMS:
@@ -386,6 +404,64 @@ async def list_map_assets(
         too_many=False,
         max_items=MAP_MAX_ITEMS,
     )
+
+
+@router.get("/map/clusters", response_model=MapClusterPage)
+async def list_map_clusters(
+    north: float = Query(ge=-90, le=90, allow_inf_nan=False),
+    south: float = Query(ge=-90, le=90, allow_inf_nan=False),
+    east: float = Query(ge=-180, le=180, allow_inf_nan=False),
+    west: float = Query(ge=-180, le=180, allow_inf_nan=False),
+    zoom: int = Query(ge=0, le=22),
+    media_type: MediaType | None = Query(default=None),
+    status_filter: MediaStatus | None = Query(default=None, alias="status"),
+    company: str | None = Query(default=None, max_length=120),
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(require_roles(*READ_ROLES)),
+) -> MapClusterPage:
+    filters = await map_viewport_filters(
+        session, north, south, east, west, media_type, status_filter, company, current_user.role,
+    )
+    # A grade ocupa no máximo 400 células, independentemente do número de ativos.
+    # O tamanho geográfico da célula diminui ao aproximar a viewport.
+    cells = 12 if zoom <= 10 else 16 if zoom <= 13 else 20
+    cell_width = (east - west) / cells
+    cell_height = (north - south) / cells
+    column = func.least(cells - 1, func.greatest(0, func.floor((MediaAsset.longitude - west) / cell_width)))
+    row = func.least(cells - 1, func.greatest(0, func.floor((MediaAsset.latitude - south) / cell_height)))
+    grouped = await session.execute(
+        select(column.label("column"), row.label("row"), func.count(MediaAsset.id).label("count"))
+        .where(*filters)
+        .group_by(column, row)
+        .order_by(column, row)
+    )
+    clusters = [
+        MapCluster(
+            id=f"{zoom}:{int(item._mapping['column'])}:{int(item._mapping['row'])}",
+            count=item._mapping["count"],
+            latitude=south + (item._mapping["row"] + 0.5) * cell_height,
+            longitude=west + (item._mapping["column"] + 0.5) * cell_width,
+        )
+        for item in grouped
+    ]
+    return MapClusterPage(clusters=clusters, total=sum(cluster.count for cluster in clusters))
+
+
+@router.get("/map/company-options", response_model=list[str])
+async def list_map_company_options(
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(require_roles(*READ_ROLES)),
+) -> list[str]:
+    linked = await session.scalars(select(ApplicationForm.company_responsible).distinct())
+    names = {name.strip() for name in linked if name and name.strip()}
+    if current_user.role != "viewer":
+        manual = await session.scalars(
+            select(MediaAsset.contact_name)
+            .where(~MediaAsset.application_form.has(), MediaAsset.contact_name.is_not(None))
+            .distinct()
+        )
+        names.update(name.strip() for name in manual if name and name.strip())
+    return sorted(names, key=lambda name: (name.casefold(), name))
 
 
 @router.get("/stats", response_model=MediaStatsRead)
