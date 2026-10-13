@@ -3,14 +3,14 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.routes.media_rules import active_rule_for_type, calculate_rule_radius
 from app.core.security import require_roles
-from app.db.models import ActivityLog, MediaAsset, ProcessCounter, User
+from app.db.models import ActivityLog, ApplicationForm, MediaAsset, ProcessCounter, User
 from app.db.session import get_session
 from app.domain.rules import AssetForAnalysis, evaluate_conflicts
 from app.schemas import (
@@ -183,37 +183,79 @@ async def analyze_asset(asset: MediaAsset, session: AsyncSession) -> dict[str, A
     return evaluate_conflicts(to_analysis_asset(asset), [to_analysis_asset(item) for item in result])
 
 
-@router.get("", response_model=MediaAssetPage)
-async def list_media_assets(
-    search: str | None = Query(default=None, max_length=120),
-    media_type: MediaType | None = Query(default=None),
-    status_filter: MediaStatus | None = Query(default=None, alias="status"),
-    limit: int = Query(default=100, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
-    session: AsyncSession = Depends(get_session),
-    current_user: User = Depends(require_roles(*READ_ROLES)),
-) -> MediaAssetPage:
+def company_match(value: str, *, partial: bool, include_manual: bool):
+    """Match the linked form company, or a manual asset's visible contact name."""
+    form_name = ApplicationForm.company_responsible.ilike(f"%{value}%") if partial else (
+        func.lower(ApplicationForm.company_responsible) == value.lower()
+    )
+    matches = [MediaAsset.application_form.has(form_name)]
+    if include_manual:
+        manual_name = MediaAsset.contact_name.ilike(f"%{value}%") if partial else (
+            func.lower(func.trim(MediaAsset.contact_name)) == value.lower()
+        )
+        matches.append(and_(~MediaAsset.application_form.has(), manual_name))
+    return or_(*matches)
+
+
+def media_asset_filters(
+    *,
+    search: str | None,
+    media_type: MediaType | None,
+    status_filter: MediaStatus | None,
+    district: str | None,
+    company: str | None,
+    user_role: str,
+):
     filters = []
-    if search:
-        pattern = f"%{search.strip()}%"
+    if search and (term := search.strip()):
+        pattern = f"%{term}%"
         filters.append(
             or_(
                 MediaAsset.address.ilike(pattern),
                 MediaAsset.district.ilike(pattern),
                 MediaAsset.process_code.ilike(pattern),
+                MediaAsset.official_process_code.ilike(pattern),
+                company_match(term, partial=True, include_manual=user_role != "viewer"),
             )
         )
     if media_type:
         filters.append(MediaAsset.media_type == media_type.value)
     if status_filter:
         filters.append(MediaAsset.status == status_filter.value)
+    if district and (district_name := district.strip()):
+        filters.append(func.lower(MediaAsset.district) == district_name.lower())
+    if company and (company_name := company.strip()):
+        filters.append(company_match(company_name, partial=False, include_manual=user_role != "viewer"))
+    return filters
+
+
+@router.get("", response_model=MediaAssetPage)
+async def list_media_assets(
+    search: str | None = Query(default=None, max_length=120),
+    media_type: MediaType | None = Query(default=None),
+    status_filter: MediaStatus | None = Query(default=None, alias="status"),
+    district: str | None = Query(default=None, max_length=120),
+    company: str | None = Query(default=None, max_length=120),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(require_roles(*READ_ROLES)),
+) -> MediaAssetPage:
+    filters = media_asset_filters(
+        search=search,
+        media_type=media_type,
+        status_filter=status_filter,
+        district=district,
+        company=company,
+        user_role=current_user.role,
+    )
 
     total = await session.scalar(select(func.count()).select_from(MediaAsset).where(*filters)) or 0
     result = await session.scalars(
         select(MediaAsset)
         .options(selectinload(MediaAsset.application_form))
         .where(*filters)
-        .order_by(MediaAsset.created_at.desc())
+        .order_by(MediaAsset.created_at.desc(), MediaAsset.id.desc())
         .offset(offset)
         .limit(limit)
     )
