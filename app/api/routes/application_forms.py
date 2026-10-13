@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import ValidationError
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.routes.media_assets import (
     APPROVAL_LOCK_ID,
@@ -206,6 +207,22 @@ async def list_application_forms(
         select(ApplicationForm).where(*filters).order_by(ApplicationForm.created_at.desc())
     )
     return list(result)
+
+
+@router.get("/by-asset/{asset_id}", response_model=ApplicationFormRead)
+async def get_application_form_for_asset(
+    asset_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    _: User = Depends(require_roles(*FORM_ROLES)),
+) -> ApplicationForm:
+    application_form = await session.scalar(
+        select(ApplicationForm)
+        .options(selectinload(ApplicationForm.attachments))
+        .where(ApplicationForm.asset_id == asset_id)
+    )
+    if application_form is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Formulario nao encontrado.")
+    return application_form
 
 
 @router.get("/{form_id}", response_model=ApplicationFormRead)

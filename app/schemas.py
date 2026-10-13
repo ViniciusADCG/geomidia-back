@@ -144,6 +144,26 @@ class MediaAssetPage(BaseModel):
     offset: int
 
 
+class MapAssetSummary(BaseModel):
+    id: UUID
+    latitude: float
+    longitude: float
+    radius_meters: int
+    media_type: MediaType
+    status: MediaStatus
+    process_code: str
+    official_process_code: str | None
+    company_responsible: str | None
+    contact_name: str | None
+
+
+class MapAssetPage(BaseModel):
+    items: list[MapAssetSummary]
+    total: int
+    too_many: bool
+    max_items: int
+
+
 class MediaExpirationOverviewRead(BaseModel):
     reference_date: date
     window_end_date: date
