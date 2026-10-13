@@ -3,7 +3,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, literal, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -16,6 +16,8 @@ from app.domain.rules import AssetForAnalysis, evaluate_conflicts
 from app.schemas import (
     ActivityType,
     ConflictAnalysisRead,
+    MapAssetPage,
+    MapAssetSummary,
     MediaAssetBase,
     MediaAssetCreate,
     MediaAssetPage,
@@ -32,6 +34,7 @@ READ_ROLES = ("admin", "analyst", "viewer")
 WRITE_ROLES = ("admin", "analyst")
 APPROVAL_LOCK_ID = 729_041
 EXPIRATION_WINDOW_DAYS = 90
+MAP_MAX_ITEMS = 1000
 BUSINESS_TIMEZONE = timezone(timedelta(hours=-4))
 ANALYSIS_STATUS_VALUES = (
     MediaStatus.analysis.value,
@@ -229,6 +232,57 @@ def media_asset_filters(
     return filters
 
 
+def map_spatial_match(north: float, south: float, east: float, west: float):
+    """Test a WGS84 rectangle without treating its latitude edges as geodesic arcs."""
+    viewport = func.ST_MakeEnvelope(west, south, east, north, 4326)
+    point = func.Geography(MediaAsset.geom)
+
+    def meridian(longitude: float):
+        start = func.ST_SetSRID(func.ST_MakePoint(longitude, south), 4326)
+        end = func.ST_SetSRID(func.ST_MakePoint(longitude, north), 4326)
+        return func.Geography(func.ST_MakeLine(start, end))
+
+    def parallel_nearest(latitude: float):
+        nearest = func.ST_SetSRID(func.ST_MakePoint(MediaAsset.longitude, latitude), 4326)
+        return and_(
+            MediaAsset.longitude.between(west, east),
+            func.ST_DWithin(point, func.Geography(nearest), MediaAsset.radius_meters),
+        )
+
+    # A point inside the rectangle qualifies. For a point outside, its nearest
+    # point lies on a meridian side or on a parallel at the same longitude.
+    return or_(
+        MediaAsset.geom.op("&&")(viewport),
+        func.ST_DWithin(point, meridian(west), MediaAsset.radius_meters),
+        func.ST_DWithin(point, meridian(east), MediaAsset.radius_meters),
+        parallel_nearest(north),
+        parallel_nearest(south),
+    )
+
+
+async def map_index_prefilter(session: AsyncSession, viewport):
+    """Use the existing geom GiST only when a conservative expansion is provable."""
+    outside_campo_grande_region = or_(
+        ~MediaAsset.latitude.between(-30, -10),
+        ~MediaAsset.longitude.between(-60, -50),
+    )
+    max_radius, outliers = (
+        await session.execute(
+            select(
+                func.max(MediaAsset.radius_meters),
+                func.count().filter(outside_campo_grande_region),
+            )
+        )
+    ).one()
+    if max_radius is None or max_radius < 0 or outliers or max_radius > 100_000:
+        return None
+
+    # Around Campo Grande, one degree in either axis exceeds 50 km. For radii
+    # up to 100 km, this expansion strictly contains every intersecting center.
+    # Outlier coordinates or larger stored radii fall back to the exact test.
+    return MediaAsset.geom.op("&&")(func.ST_Expand(viewport, max_radius / 50_000))
+
+
 @router.get("", response_model=MediaAssetPage)
 async def list_media_assets(
     search: str | None = Query(default=None, max_length=120),
@@ -264,6 +318,73 @@ async def list_media_assets(
         total=total,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.get("/map", response_model=MapAssetPage)
+async def list_map_assets(
+    north: float = Query(ge=-90, le=90, allow_inf_nan=False),
+    south: float = Query(ge=-90, le=90, allow_inf_nan=False),
+    east: float = Query(ge=-180, le=180, allow_inf_nan=False),
+    west: float = Query(ge=-180, le=180, allow_inf_nan=False),
+    media_type: MediaType | None = Query(default=None),
+    status_filter: MediaStatus | None = Query(default=None, alias="status"),
+    company: str | None = Query(default=None, max_length=120),
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(require_roles(*READ_ROLES)),
+) -> MapAssetPage:
+    if north <= south or east <= west:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A viewport exige north > south e east > west; antimeridiano não é suportado.",
+        )
+
+    viewport = func.ST_MakeEnvelope(west, south, east, north, 4326)
+    filters = media_asset_filters(
+        search=None,
+        media_type=media_type,
+        status_filter=status_filter,
+        district=None,
+        company=company,
+        user_role=current_user.role,
+    )
+    prefilter = await map_index_prefilter(session, viewport)
+    if prefilter is not None:
+        filters.append(prefilter)
+    filters.append(map_spatial_match(north, south, east, west))
+
+    total = await session.scalar(select(func.count()).select_from(MediaAsset).where(*filters)) or 0
+    if total > MAP_MAX_ITEMS:
+        return MapAssetPage(items=[], total=total, too_many=True, max_items=MAP_MAX_ITEMS)
+
+    company_name = (
+        select(ApplicationForm.company_responsible)
+        .where(ApplicationForm.asset_id == MediaAsset.id)
+        .scalar_subquery()
+    )
+    manual_name = case((~MediaAsset.application_form.has(), MediaAsset.contact_name), else_=None)
+    contact_name = manual_name if current_user.role != "viewer" else literal(None)
+    rows = await session.execute(
+        select(
+            MediaAsset.id,
+            MediaAsset.latitude,
+            MediaAsset.longitude,
+            MediaAsset.radius_meters,
+            MediaAsset.media_type,
+            MediaAsset.status,
+            MediaAsset.process_code,
+            MediaAsset.official_process_code,
+            company_name.label("company_responsible"),
+            contact_name.label("contact_name"),
+        )
+        .where(*filters)
+        .order_by(MediaAsset.created_at.desc(), MediaAsset.id.desc())
+    )
+    return MapAssetPage(
+        items=[MapAssetSummary.model_validate(dict(row._mapping)) for row in rows],
+        total=total,
+        too_many=False,
+        max_items=MAP_MAX_ITEMS,
     )
 
 
