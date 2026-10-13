@@ -164,6 +164,18 @@ class MapAssetPage(BaseModel):
     max_items: int
 
 
+class MapCluster(BaseModel):
+    id: str
+    count: int
+    latitude: float
+    longitude: float
+
+
+class MapClusterPage(BaseModel):
+    clusters: list[MapCluster]
+    total: int
+
+
 class MediaExpirationOverviewRead(BaseModel):
     reference_date: date
     window_end_date: date
