@@ -2,13 +2,21 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import or_, select
+from pydantic import ValidationError
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.routes.media_assets import asset_snapshot, log_activity
+from app.api.routes.media_assets import (
+    APPROVAL_LOCK_ID,
+    analyze_asset,
+    asset_for_user,
+    asset_snapshot,
+    ensure_direct_status_change_allowed,
+    log_activity,
+)
 from app.api.routes.media_rules import active_rule_for_type, calculate_rule_radius
 from app.core.security import require_roles
-from app.db.models import ActivityLog, ApplicationForm, ApplicationFormAttachment, User
+from app.db.models import ActivityLog, ApplicationForm, ApplicationFormAttachment, MediaAsset, User
 from app.db.session import get_session
 from app.schemas import (
     ActivityType,
@@ -16,6 +24,10 @@ from app.schemas import (
     ApplicationFormRead,
     ApplicationFormUpdate,
     AttachmentDownloadRead,
+    LinkedApplicationFormRead,
+    LinkedApplicationFormUpdate,
+    MediaAssetBase,
+    MediaStatus,
 )
 from app.services.storage import StorageConfigurationError, StorageRequestError, SupabaseStorage
 
@@ -45,6 +57,131 @@ async def get_form_or_404(form_id: UUID, session: AsyncSession) -> ApplicationFo
     if application_form is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Formulario nao encontrado.")
     return application_form
+
+
+@router.patch("/{form_id}/linked", response_model=LinkedApplicationFormRead)
+async def update_linked_application_form(
+    form_id: UUID,
+    payload: LinkedApplicationFormUpdate,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(require_roles(*FORM_ROLES)),
+) -> LinkedApplicationFormRead:
+    try:
+        application_form = await get_form_or_404(form_id, session)
+        asset = await session.get(MediaAsset, application_form.asset_id)
+        linked_asset = application_form.asset
+        if asset is None or linked_asset is None or application_form.asset_id != asset.id or linked_asset.id != asset.id:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Vinculo entre formulario e ativo invalido.")
+
+        form_changes = payload.form.model_dump(exclude_unset=True, mode="json")
+        asset_changes = payload.asset.model_dump(exclude_unset=True, mode="json")
+        required_form = {
+            name for name, info in ApplicationFormBase.model_fields.items() if info.is_required()
+        }
+        required_asset = {"media_type", "address", "district", "latitude", "longitude", "status"}
+        if any(form_changes.get(name, object()) is None for name in required_form):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Campo obrigatorio nulo.")
+        if any(asset_changes.get(name, object()) is None for name in required_asset):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Campo obrigatorio nulo.")
+
+        before_form = ApplicationFormBase.model_validate(application_form).model_dump(mode="json")
+        before_asset = asset_snapshot(asset)
+        try:
+            validated_form = ApplicationFormBase.model_validate({**before_form, **form_changes})
+            form_values = validated_form.model_dump(mode="json")
+            shared_fields = {"media_type", "district", "latitude", "longitude", "expiration_date"}
+            for field in shared_fields.intersection(form_changes):
+                asset_changes[field] = form_values[field]
+            if {"street", "number"}.intersection(form_changes):
+                asset_changes["address"] = f"{validated_form.street}, {validated_form.number}"
+            if "requester_email" in form_changes:
+                asset_changes["contact_email"] = str(validated_form.requester_email)
+
+            ensure_direct_status_change_allowed(asset.status, asset_changes.get("status"))
+            merged_asset = {name: before_asset[name] for name in MediaAssetBase.model_fields}
+            merged_asset.update({key: value for key, value in asset_changes.items() if key != "official_process_code"})
+            validated_asset = MediaAssetBase.model_validate(merged_asset)
+        except ValidationError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+        if validated_asset.status == MediaStatus.irregular and not (validated_asset.justification or "").strip():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="A justificativa e obrigatoria para marcar um processo como irregular.",
+            )
+
+        if "official_process_code" in asset_changes:
+            official_code = (asset_changes.pop("official_process_code") or "").strip() or None
+        else:
+            official_code = asset.official_process_code
+        radius = asset.radius_meters
+        if "media_type" in asset_changes and validated_asset.media_type.value != asset.media_type:
+            rule = await active_rule_for_type(validated_asset.media_type.value, session)
+            radius = calculate_rule_radius(rule, validated_asset.area_m2, validated_asset.area_rule_classification)
+
+        for field in form_changes:
+            if field != "expiration_date":
+                setattr(application_form, field, form_values[field])
+        validated_asset_values = validated_asset.model_dump(mode="json")
+        for field, value in asset_changes.items():
+            if field == "expiration_date":
+                value = validated_asset.expiration_date
+            else:
+                value = validated_asset_values.get(field, value)
+            setattr(asset, field, value)
+        asset.official_process_code = official_code
+        asset.radius_meters = radius
+
+        if asset.status == MediaStatus.approved.value:
+            await session.execute(select(func.pg_advisory_xact_lock(APPROVAL_LOCK_ID)))
+            await session.flush()
+            analysis = await analyze_asset(asset, session)
+            if analysis["has_conflict"]:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={"message": analysis["message"], "conflicts": analysis["conflicts"]},
+                )
+
+        after_asset = asset_snapshot(asset)
+        after_form = ApplicationFormBase.model_validate(application_form).model_dump(mode="json")
+        asset_diff = {
+            field: {"before": before_asset.get(field), "after": value}
+            for field, value in after_asset.items() if before_asset.get(field) != value
+        }
+        form_diff = {
+            field: {"before": before_form.get(field), "after": value}
+            for field, value in after_form.items() if before_form.get(field) != value
+        }
+        if asset_diff or form_diff:
+            if before_asset["status"] != asset.status and asset.status == MediaStatus.approved.value:
+                activity_type = ActivityType.aprovacao
+                message = f"Processo {asset.process_code} aprovado. {asset.justification or ''}".strip()
+            elif before_asset["status"] != asset.status and asset.status == MediaStatus.irregular.value:
+                activity_type = ActivityType.reprovacao
+                message = f"Processo {asset.process_code} marcado como irregular. {asset.justification or ''}".strip()
+            else:
+                activity_type = ActivityType.edicao
+                message = f"Formulario e processo {asset.process_code} atualizados."
+            session.add(log_activity(
+                asset, activity_type, message,
+                current_user, request.state.request_id,
+                {"asset": asset_diff, "form": form_diff, "form_id": str(application_form.id)},
+            ))
+
+        await session.flush()
+        result = LinkedApplicationFormRead(
+            form=ApplicationFormRead.model_validate(application_form),
+            asset=asset_for_user(asset, current_user).model_copy(update={
+                "company_responsible": application_form.company_responsible,
+                "company_cnpj": application_form.company_cnpj,
+            }),
+        )
+        await session.commit()
+        return result
+    except Exception:
+        await session.rollback()
+        raise
 
 
 @router.get("", response_model=list[ApplicationFormRead])

@@ -250,6 +250,49 @@ class ApplicationFormRead(ApplicationFormBase):
     updated_at: datetime
 
 
+class LinkedApplicationFormFields(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    company_responsible: str | None = Field(default=None, min_length=2, max_length=120)
+    company_cnpj: str | None = Field(default=None, pattern=r"^\d{14}$")
+    municipal_registration: str | None = Field(default=None, min_length=1, max_length=60)
+    property_registration: str | None = Field(default=None, min_length=1, max_length=60)
+    street: str | None = Field(default=None, min_length=2, max_length=180)
+    number: str | None = Field(default=None, min_length=1, max_length=30)
+    district: str | None = Field(default=None, min_length=2, max_length=120)
+    postal_code: str | None = Field(default=None, pattern=r"^\d{5}-?\d{3}$")
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    media_type: MediaType | None = None
+    number_of_faces: str | None = Field(default=None, max_length=30)
+    expiration_date: date | None = None
+    requester_email: EmailStr | None = None
+
+
+class LinkedMediaAssetFields(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    official_process_code: str | None = Field(default=None, max_length=80)
+    width_m: float | None = Field(default=None, gt=0)
+    top_height_m: float | None = Field(default=None, ge=0)
+    status: MediaStatus | None = None
+    justification: str | None = None
+    contact_name: str | None = Field(default=None, max_length=120)
+    attachment_links: str | None = None
+
+
+class LinkedApplicationFormUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    form: LinkedApplicationFormFields = Field(default_factory=LinkedApplicationFormFields)
+    asset: LinkedMediaAssetFields = Field(default_factory=LinkedMediaAssetFields)
+
+
+class LinkedApplicationFormRead(BaseModel):
+    form: ApplicationFormRead
+    asset: MediaAssetRead
+
+
 class PublicApplicantInput(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
