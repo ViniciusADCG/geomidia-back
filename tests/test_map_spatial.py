@@ -20,7 +20,7 @@ class MapRequestValidationTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         app.dependency_overrides.clear()
 
-    async def request(self, params, *, authenticated=True):
+    async def request(self, params, *, authenticated=True, path="/api/media-assets/map"):
         if authenticated:
             app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(role="viewer")
 
@@ -29,7 +29,7 @@ class MapRequestValidationTests(unittest.IsolatedAsyncioTestCase):
 
         app.dependency_overrides[get_session] = session
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            return await client.get("/api/media-assets/map", params=params)
+            return await client.get(path, params=params)
 
     async def test_invalid_and_nonfinite_viewports_are_rejected(self):
         invalid = (
@@ -56,6 +56,25 @@ class MapRequestValidationTests(unittest.IsolatedAsyncioTestCase):
             {"north", "south", "east", "west", "media_type", "status", "company"},
         )
         self.assertIn("/api/application-forms/by-asset/{asset_id}", paths)
+        cluster = paths["/api/media-assets/map/clusters"]["get"]
+        self.assertEqual(
+            {parameter["name"] for parameter in cluster["parameters"]},
+            {"north", "south", "east", "west", "zoom", "media_type", "status", "company"},
+        )
+        self.assertIn("/api/media-assets/map/company-options", paths)
+
+    async def test_cluster_viewport_validation_and_authentication(self):
+        self.assertEqual(
+            (await self.request(
+                {**VIEWPORT, "zoom": 12, "north": VIEWPORT["south"]},
+                path="/api/media-assets/map/clusters",
+            )).status_code,
+            422,
+        )
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            app.dependency_overrides.clear()
+            response = await client.get("/api/media-assets/map/clusters", params={**VIEWPORT, "zoom": 12})
+            self.assertEqual(response.status_code, 401)
 
 
 class MapPostgisTests(unittest.IsolatedAsyncioTestCase):
@@ -283,3 +302,75 @@ class MapPostgisTests(unittest.IsolatedAsyncioTestCase):
             (await self.request(path=f"/api/application-forms/by-asset/{linked.id}", role="viewer")).status_code,
             403,
         )
+
+    async def test_clusters_include_edge_radii_and_exclude_nonintersections(self):
+        for latitude, longitude, radius in (
+            (-20.46, -54.61, 80),
+            (-20.4579, -54.61, 250),
+            (-20.4621, -54.61, 250),
+            (-20.46, -54.6079, 250),
+            (-20.46, -54.6121, 250),
+            (-20.4583, -54.6083, 250),
+        ):
+            await self.add_asset(latitude=latitude, longitude=longitude, radius=radius)
+        await self.add_asset(latitude=-20.455, radius=80)
+        response = await self.request(path="/api/media-assets/map/clusters", params={**VIEWPORT, "zoom": 12})
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["total"], 6)
+        self.assertEqual(sum(cluster["count"] for cluster in body["clusters"]), 6)
+        self.assertTrue(all(set(cluster) == {"id", "count", "latitude", "longitude"} for cluster in body["clusters"]))
+
+    async def test_clusters_filters_zoom_empty_and_determinism(self):
+        await self.add_asset(media_type="outdoor", company="Empresa Aurora")
+        await self.add_asset(media_type="triface", status="análise", contact_name="Oficina Manual")
+        await self.add_asset(media_type="outdoor", company="Empresa Aurora", longitude=-54.6107)
+        path = "/api/media-assets/map/clusters"
+        params = {**VIEWPORT, "zoom": 12}
+        first = (await self.request(path=path, params=params)).json()
+        self.assertEqual(first, (await self.request(path=path, params=params)).json())
+        self.assertEqual(first["total"], 3)
+        self.assertGreaterEqual(len(first["clusters"]), 2)
+        self.assertEqual(sum(cluster["count"] for cluster in first["clusters"]), 3)
+        self.assertNotEqual(first["clusters"], (await self.request(path=path, params={**params, "zoom": 15})).json()["clusters"])
+        for extra, expected in (
+            ({"media_type": "outdoor"}, 2),
+            ({"status": "análise"}, 1),
+            ({"company": "Empresa Aurora"}, 2),
+            ({"company": "Oficina Manual"}, 1),
+        ):
+            body = (await self.request(path=path, params={**params, **extra})).json()
+            self.assertEqual(body["total"], expected)
+            self.assertEqual(sum(cluster["count"] for cluster in body["clusters"]), expected)
+        viewer = (await self.request(path=path, params={**params, "company": "Oficina Manual"}, role="viewer")).json()
+        self.assertEqual(viewer, {"clusters": [], "total": 0})
+        empty = (await self.request(path=path, params={**params, "company": "Ausente"})).json()
+        self.assertEqual(empty, {"clusters": [], "total": 0})
+
+    async def test_company_options_respect_manual_contact_permissions(self):
+        await self.add_asset(company="Empresa Aurora")
+        await self.add_asset(contact_name="Oficina Manual")
+        path = "/api/media-assets/map/company-options"
+        self.assertEqual((await self.request(path=path)).json(), ["Empresa Aurora", "Oficina Manual"])
+        self.assertEqual((await self.request(path=path, role="viewer")).json(), ["Empresa Aurora"])
+
+    async def test_clustering_counts_all_dense_results_without_limit(self):
+        rows = [
+            {
+                "id": uuid4(),
+                "process_code": f"MAP-CLUSTER-{uuid4().hex[:18]}",
+                "media_type": "outdoor",
+                "status": "aprovado",
+                "address": "Rua de teste, 1",
+                "district": "Centro",
+                "latitude": -20.46,
+                "longitude": -54.61,
+                "radius_meters": 80,
+            }
+            for _ in range(1001)
+        ]
+        await self.session.execute(insert(MediaAsset), rows)
+        await self.session.flush()
+        body = (await self.request(path="/api/media-assets/map/clusters", params={**VIEWPORT, "zoom": 12})).json()
+        self.assertEqual(body["total"], 1001)
+        self.assertEqual(sum(cluster["count"] for cluster in body["clusters"]), 1001)
