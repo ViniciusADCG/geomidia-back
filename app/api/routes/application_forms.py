@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import ValidationError
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import contains_eager, selectinload
 
 from app.api.routes.media_assets import (
     APPROVAL_LOCK_ID,
@@ -22,6 +22,7 @@ from app.db.session import get_session
 from app.schemas import (
     ActivityType,
     ApplicationFormBase,
+    ApplicationFormPage,
     ApplicationFormRead,
     ApplicationFormUpdate,
     AttachmentDownloadRead,
@@ -185,28 +186,43 @@ async def update_linked_application_form(
         raise
 
 
-@router.get("", response_model=list[ApplicationFormRead])
+@router.get("", response_model=ApplicationFormPage)
 async def list_application_forms(
     search: str | None = Query(default=None, max_length=120),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_session),
     _: User = Depends(require_roles(*FORM_ROLES)),
-) -> list[ApplicationForm]:
+) -> ApplicationFormPage:
     filters = []
-    if search:
+    if search and search.strip():
         pattern = f"%{search.strip()}%"
         filters.append(
             or_(
+                MediaAsset.process_code.ilike(pattern),
                 ApplicationForm.company_responsible.ilike(pattern),
                 ApplicationForm.company_cnpj.ilike(pattern),
                 ApplicationForm.municipal_registration.ilike(pattern),
                 ApplicationForm.property_registration.ilike(pattern),
                 ApplicationForm.street.ilike(pattern),
+                ApplicationForm.district.ilike(pattern),
             )
         )
-    result = await session.scalars(
-        select(ApplicationForm).where(*filters).order_by(ApplicationForm.created_at.desc())
+    base = select(ApplicationForm).join(MediaAsset, ApplicationForm.asset_id == MediaAsset.id).where(*filters)
+    total = await session.scalar(
+        select(func.count(ApplicationForm.id)).join(MediaAsset, ApplicationForm.asset_id == MediaAsset.id).where(*filters)
     )
-    return list(result)
+    result = await session.scalars(
+        base.options(
+            contains_eager(ApplicationForm.asset).load_only(
+                MediaAsset.id, MediaAsset.process_code, MediaAsset.status, MediaAsset.expiration_date,
+            ),
+            selectinload(ApplicationForm.attachments),
+        )
+        .order_by(ApplicationForm.created_at.desc(), ApplicationForm.id.desc())
+        .limit(limit).offset(offset)
+    )
+    return ApplicationFormPage(items=list(result), total=total or 0, limit=limit, offset=offset)
 
 
 @router.get("/by-asset/{asset_id}", response_model=ApplicationFormRead)
