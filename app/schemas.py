@@ -387,6 +387,9 @@ class PublicNewProcessPayload(BaseModel):
     website: str = Field(default="", max_length=200)
 
 
+PUBLIC_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024
+
+
 class PublicAttachmentInput(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -394,7 +397,7 @@ class PublicAttachmentInput(BaseModel):
     category: str = Field(alias="categoria", min_length=1, max_length=40)
     filename: str = Field(alias="nome", min_length=1, max_length=180)
     content_type: str = Field(alias="tipoConteudo", min_length=1, max_length=120)
-    size_bytes: int = Field(alias="tamanhoBytes", gt=0, le=10 * 1024 * 1024)
+    size_bytes: int = Field(alias="tamanhoBytes", gt=0, le=PUBLIC_ATTACHMENT_MAX_BYTES)
 
 
 class PublicSubmissionInitiate(BaseModel):

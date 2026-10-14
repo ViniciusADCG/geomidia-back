@@ -16,12 +16,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.routes.public_submissions import (
     DRAFT_LIFETIME,
     MINIMUM_FILL_TIME,
-    RATE_LIMIT_WINDOW,
     attachment_kind,
     client_fingerprint,
+    enforce_public_draft_limit,
     safe_filename,
     storage_or_503,
     validate_public_origin,
+    validate_uploaded_attachments,
 )
 from app.core.config import get_settings
 from app.db.models import PublicSubmissionDraft, RequirementResponseCounter
@@ -146,14 +147,7 @@ async def initiate_requirement_response(
     validate_public_origin(request, settings)
     validate_requirement_submission(body)
     fingerprint = client_fingerprint(request, settings)
-    recent_count = await session.scalar(
-        select(func.count(PublicSubmissionDraft.id)).where(
-            PublicSubmissionDraft.client_fingerprint == fingerprint,
-            PublicSubmissionDraft.created_at >= datetime.now(UTC) - RATE_LIMIT_WINDOW,
-        )
-    ) or 0
-    if recent_count >= settings.public_submission_rate_limit:
-        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde alguns minutos e tente novamente.")
+    await enforce_public_draft_limit(session, fingerprint, settings)
     storage = storage_or_503(settings)
     draft_id = uuid.uuid4()
     token = secrets.token_urlsafe(32)
@@ -196,13 +190,7 @@ async def finalize_requirement_response(
     if datetime.now(UTC) - draft.created_at.astimezone(UTC) > DRAFT_LIFETIME:
         raise HTTPException(status_code=410, detail="O envio expirou. Preencha o formulário novamente.")
     storage = storage_or_503(get_settings())
-    try:
-        metadata = await asyncio.gather(*(storage.get_object_metadata(item["object_path"]) for item in draft.attachments))
-    except StorageRequestError as exc:
-        raise HTTPException(status_code=503, detail="Não foi possível validar os anexos enviados.") from exc
-    for attachment, item in zip(draft.attachments, metadata, strict=True):
-        if item is None or (item.size_bytes is not None and item.size_bytes != attachment["size_bytes"]):
-            raise HTTPException(status_code=409, detail=f"O anexo {attachment['filename']} não foi enviado corretamente.")
+    await validate_uploaded_attachments(storage, draft.attachments)
     finalized_at = datetime.now(UTC)
     draft.process_code = await next_requirement_response_code(session, protocol_year(finalized_at))
     draft.finalized_at = finalized_at

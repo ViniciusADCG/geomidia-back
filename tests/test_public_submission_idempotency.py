@@ -7,11 +7,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
+from fastapi import HTTPException
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.requests import Request
 
-from app.api.routes.public_submissions import finalize_public_submission
+from app.api.routes.public_submissions import enforce_public_draft_limit, finalize_public_submission
+from app.core.config import Settings
 from app.db.models import (
     ActivityLog,
     ApplicationForm,
@@ -26,6 +28,44 @@ from tests.test_public_submissions import valid_manifest, valid_public_payload
 
 
 class PublicSubmissionIdempotencyPostgresTests(unittest.IsolatedAsyncioTestCase):
+    async def test_concurrent_initiations_share_the_database_limit(self):
+        fingerprint = sha256(uuid4().bytes).hexdigest()
+        new_draft_id = uuid4()
+        settings = Settings(public_submission_rate_limit=1)
+        first_checked = asyncio.Event()
+        release_first = asyncio.Event()
+
+        async def first():
+            async with self.sessions() as session:
+                await enforce_public_draft_limit(session, fingerprint, settings)
+                session.add(PublicSubmissionDraft(
+                    id=new_draft_id, token_hash="a" * 64, client_fingerprint=fingerprint,
+                    payload={}, attachments=[], created_at=datetime.now(UTC),
+                ))
+                first_checked.set()
+                await release_first.wait()
+                await session.commit()
+
+        async def second():
+            await first_checked.wait()
+            async with self.sessions() as session:
+                with self.assertRaises(HTTPException) as context:
+                    await enforce_public_draft_limit(session, fingerprint, settings)
+                self.assertEqual(context.exception.status_code, 429)
+
+        first_task = asyncio.create_task(first())
+        second_task = asyncio.create_task(second())
+        try:
+            await first_checked.wait()
+            await asyncio.sleep(0.05)
+            release_first.set()
+            await asyncio.gather(first_task, second_task)
+        finally:
+            release_first.set()
+            async with self.sessions() as session:
+                await session.execute(delete(PublicSubmissionDraft).where(PublicSubmissionDraft.id == new_draft_id))
+                await session.commit()
+
     async def asyncSetUp(self):
         database_url = os.getenv("DATABASE_URL", "")
         if not database_url.rsplit("/", 1)[-1].split("?", 1)[0].endswith("_test"):
@@ -46,7 +86,10 @@ class PublicSubmissionIdempotencyPostgresTests(unittest.IsolatedAsyncioTestCase)
                 created_at=datetime.now(UTC),
             ))
             await session.commit()
-        storage = SimpleNamespace(get_object_metadata=AsyncMock(return_value=ObjectMetadata(1024, "application/pdf")))
+        storage = SimpleNamespace(
+            get_object_metadata=AsyncMock(return_value=ObjectMetadata(1024, "application/pdf")),
+            get_object_signature=AsyncMock(return_value=b"%PDF-1.7"),
+        )
         rule = SimpleNamespace(base_radius_meters=80, area_threshold_m2=None, radius_above_threshold_meters=None)
         self.storage_patch = patch("app.api.routes.public_submissions.storage_or_503", return_value=storage)
         self.rule_patch = patch("app.api.routes.public_submissions.active_rule_for_type", new_callable=AsyncMock,

@@ -108,7 +108,10 @@ class RequirementFinalizationTests(unittest.IsolatedAsyncioTestCase):
             scalars=AsyncMock(return_value=[]),
             commit=AsyncMock(),
         )
-        storage = SimpleNamespace(get_object_metadata=AsyncMock(return_value=SimpleNamespace(size_bytes=1024)))
+        storage = SimpleNamespace(
+            get_object_metadata=AsyncMock(return_value=SimpleNamespace(size_bytes=1024)),
+            get_object_signature=AsyncMock(return_value=b"%PDF-1.7"),
+        )
         request = Request({
             "type": "http", "headers": [(b"origin", b"http://localhost:5173")],
             "client": ("127.0.0.1", 1234),
@@ -119,6 +122,7 @@ class RequirementFinalizationTests(unittest.IsolatedAsyncioTestCase):
         ):
             result = await finalize_requirement_response(uuid4(), PublicSubmissionFinalize(token=token), request, session)
         storage.get_object_metadata.assert_awaited_once()
+        storage.get_object_signature.assert_awaited_once()
         session.commit.assert_awaited_once()
         self.assertEqual(result.protocolo, f"HESP-01-{protocol_year()}")
         self.assertFalse(result.receipt_sent)
