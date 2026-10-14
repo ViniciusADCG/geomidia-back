@@ -28,6 +28,7 @@ from app.db.models import (
 )
 from app.db.session import get_session
 from app.schemas import (
+    PUBLIC_ATTACHMENT_MAX_BYTES,
     ActivityType,
     ApplicationFormBase,
     MediaStatus,
@@ -55,7 +56,17 @@ UPLOAD_RULES = {
     "projetoImplantacao": {"min": 1, "max": 5, "types": {"pdf"}},
     "artRrt": {"min": 1, "max": 5, "types": {"pdf"}},
 }
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic", ".heif"}
+FILE_TYPES = {
+    ".pdf": ("application/pdf", "pdf"),
+    ".jpg": ("image/jpeg", "jpeg"),
+    ".jpeg": ("image/jpeg", "jpeg"),
+    ".png": ("image/png", "png"),
+    ".gif": ("image/gif", "gif"),
+    ".webp": ("image/webp", "webp"),
+    ".bmp": ("image/bmp", "bmp"),
+    ".heic": ("image/heic", "heic"),
+    ".heif": ("image/heif", "heif"),
+}
 DRAFT_LIFETIME = timedelta(hours=2)
 RATE_LIMIT_WINDOW = timedelta(minutes=10)
 MINIMUM_FILL_TIME = timedelta(seconds=3)
@@ -83,11 +94,67 @@ def safe_filename(filename: str) -> str:
 
 def attachment_kind(attachment: PublicAttachmentInput) -> str | None:
     extension = f".{attachment.filename.rsplit('.', 1)[-1].lower()}" if "." in attachment.filename else ""
-    if attachment.content_type == "application/pdf" and extension == ".pdf":
-        return "pdf"
-    if attachment.content_type.startswith("image/") and extension in IMAGE_EXTENSIONS:
-        return "image"
+    expected = FILE_TYPES.get(extension)
+    if expected and attachment.content_type.lower() == expected[0]:
+        return "pdf" if expected[1] == "pdf" else "image"
     return None
+
+
+def matches_file_signature(filename: str, signature: bytes) -> bool:
+    extension = f".{filename.rsplit('.', 1)[-1].lower()}" if "." in filename else ""
+    expected = FILE_TYPES.get(extension)
+    if expected is None:
+        return False
+    kind = expected[1]
+    if kind == "pdf":
+        return signature.startswith(b"%PDF-")
+    if kind == "jpeg":
+        return signature.startswith(b"\xff\xd8\xff")
+    if kind == "png":
+        return signature.startswith(b"\x89PNG\r\n\x1a\n")
+    if kind == "gif":
+        return signature.startswith((b"GIF87a", b"GIF89a"))
+    if kind == "webp":
+        return signature.startswith(b"RIFF") and signature[8:12] == b"WEBP"
+    if kind == "bmp":
+        return signature.startswith(b"BM")
+    if kind in {"heic", "heif"}:
+        brands = {"heic": {b"heic", b"heix", b"hevc", b"hevx"}, "heif": {b"mif1", b"msf1"}}
+        return signature[4:8] == b"ftyp" and any(
+            signature[index : index + 4] in brands[kind] for index in range(8, len(signature) - 3, 4)
+        )
+    return False
+
+
+async def enforce_public_draft_limit(session: AsyncSession, fingerprint: str, settings: Settings) -> None:
+    # The transaction lock makes count + insert atomic across serverless instances.
+    lock_key = int.from_bytes(bytes.fromhex(fingerprint)[:8], "big", signed=True)
+    await session.execute(select(func.pg_advisory_xact_lock(lock_key)))
+    recent_count = await session.scalar(
+        select(func.count(PublicSubmissionDraft.id)).where(
+            PublicSubmissionDraft.client_fingerprint == fingerprint,
+            PublicSubmissionDraft.created_at >= datetime.now(UTC) - RATE_LIMIT_WINDOW,
+        )
+    ) or 0
+    if recent_count >= settings.public_submission_rate_limit:
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde alguns minutos e tente novamente.")
+
+
+async def validate_uploaded_attachments(storage: SupabaseStorage, attachments: list[dict]) -> None:
+    try:
+        metadata = await asyncio.gather(*(storage.get_object_metadata(item["object_path"]) for item in attachments))
+        for attachment, item in zip(attachments, metadata, strict=True):
+            if item is None:
+                raise HTTPException(status_code=409, detail=f"O anexo {attachment['filename']} nao foi enviado.")
+            size = item.size_bytes
+            if size is None or size < 1 or size > PUBLIC_ATTACHMENT_MAX_BYTES or size != attachment["size_bytes"]:
+                raise HTTPException(status_code=409, detail=f"O tamanho do anexo {attachment['filename']} e invalido.")
+        signatures = await asyncio.gather(*(storage.get_object_signature(item["object_path"]) for item in attachments))
+    except StorageRequestError as exc:
+        raise HTTPException(status_code=503, detail="Nao foi possivel validar os anexos enviados.") from exc
+    for attachment, signature in zip(attachments, signatures, strict=True):
+        if not matches_file_signature(attachment["filename"], signature):
+            raise HTTPException(status_code=409, detail=f"O formato do anexo {attachment['filename']} e invalido.")
 
 
 def validate_attachment_manifest(attachments: list[PublicAttachmentInput]) -> None:
@@ -268,14 +335,7 @@ async def initiate_public_submission(
     validate_public_vehicle_rule(rule, body.payload)
 
     fingerprint = client_fingerprint(request, settings)
-    recent_count = await session.scalar(
-        select(func.count(PublicSubmissionDraft.id)).where(
-            PublicSubmissionDraft.client_fingerprint == fingerprint,
-            PublicSubmissionDraft.created_at >= datetime.now(UTC) - RATE_LIMIT_WINDOW,
-        )
-    ) or 0
-    if recent_count >= settings.public_submission_rate_limit:
-        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde alguns minutos e tente novamente.")
+    await enforce_public_draft_limit(session, fingerprint, settings)
 
     storage = storage_or_503(settings)
     draft_id = uuid.uuid4()
@@ -349,18 +409,7 @@ async def finalize_public_submission(
         raise HTTPException(status_code=410, detail="O envio expirou. Preencha o formulario novamente.")
 
     storage = storage_or_503(settings)
-    try:
-        object_metadata = await asyncio.gather(
-            *(storage.get_object_metadata(item["object_path"]) for item in draft.attachments)
-        )
-    except StorageRequestError as exc:
-        raise HTTPException(status_code=503, detail="Nao foi possivel validar os anexos enviados.") from exc
-
-    for attachment, metadata in zip(draft.attachments, object_metadata, strict=True):
-        if metadata is None:
-            raise HTTPException(status_code=409, detail=f"O anexo {attachment['filename']} nao foi enviado.")
-        if metadata.size_bytes is not None and metadata.size_bytes != attachment["size_bytes"]:
-            raise HTTPException(status_code=409, detail=f"O tamanho do anexo {attachment['filename']} diverge do informado.")
+    await validate_uploaded_attachments(storage, draft.attachments)
 
     public_payload = PublicNewProcessPayload.model_validate(draft.payload)
     validated = application_form_from_public(public_payload)

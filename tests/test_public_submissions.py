@@ -4,8 +4,9 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
+import httpx
 from fastapi import HTTPException
 from pydantic import ValidationError
 
@@ -14,16 +15,19 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from app.api.routes.application_forms import asset_data_from_form
 from app.api.routes.public_submissions import (
     application_form_from_public,
+    enforce_public_draft_limit,
+    matches_file_signature,
     public_vehicle_rules,
     safe_filename,
     validate_attachment_manifest,
     validate_public_vehicle_rule,
     validate_submission_timing,
+    validate_uploaded_attachments,
 )
 from app.core.config import Settings
 from app.db.models import ApplicationForm, MediaAsset, MediaRule
 from app.schemas import AreaRuleClassification, PublicAttachmentInput, PublicNewProcessPayload
-from app.services.storage import StorageConfigurationError, SupabaseStorage
+from app.services.storage import ObjectMetadata, StorageConfigurationError, SupabaseStorage
 
 
 def valid_public_payload(**overrides):
@@ -82,6 +86,30 @@ def valid_manifest():
 
 
 class PublicSubmissionTests(unittest.TestCase):
+    def test_uploaded_content_must_match_file_type(self):
+        valid = {
+            "a.pdf": b"%PDF-1.7\n",
+            "a.jpg": b"\xff\xd8\xff\xe0",
+            "a.png": b"\x89PNG\r\n\x1a\n",
+            "a.gif": b"GIF89a",
+            "a.webp": b"RIFF\x00\x00\x00\x00WEBP",
+            "a.bmp": b"BM\x00\x00",
+            "a.heic": b"\x00\x00\x00\x18ftypheic",
+            "a.heif": b"\x00\x00\x00\x18ftypmif1",
+        }
+        for filename, signature in valid.items():
+            with self.subTest(filename=filename):
+                self.assertTrue(matches_file_signature(filename, signature))
+                self.assertFalse(matches_file_signature(filename, b"<html>not an upload</html>"))
+        self.assertFalse(matches_file_signature("a.pdf", valid["a.png"]))
+        self.assertFalse(matches_file_signature("a.png", valid["a.pdf"]))
+
+    def test_rejects_mismatched_declared_image_type(self):
+        manifest = valid_manifest()
+        manifest[0] = attachment("alvaraLocalizacao", filename="foto.jpg", content_type="image/png")
+        with self.assertRaises(HTTPException):
+            validate_attachment_manifest(manifest)
+
     def test_public_rules_expose_active_area_threshold(self):
         rule = MediaRule(media_type="painel de led", area_threshold_m2=7, is_active=True)
         session = SimpleNamespace(scalars=AsyncMock(return_value=[rule]))
@@ -216,6 +244,60 @@ class PublicSubmissionTests(unittest.TestCase):
     def test_supabase_url_requires_protocol(self):
         with self.assertRaises(StorageConfigurationError):
             SupabaseStorage(Settings(supabase_url="example.supabase.co", supabase_service_role_key="sb_secret_example"))
+
+
+class PublicUploadSecurityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_storage_reads_only_signature_from_authenticated_object(self):
+        seen = []
+
+        def respond(request):
+            seen.append(request)
+            return httpx.Response(200, content=b"%PDF-" + b"x" * 1000)
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        storage = SupabaseStorage(Settings(supabase_url="https://example.supabase.co", supabase_service_role_key="sb_secret_example"))
+        with patch("app.services.storage.httpx.AsyncClient", return_value=client):
+            signature = await storage.get_object_signature("draft/file.pdf")
+        self.assertEqual(len(signature), 32)
+        self.assertEqual(seen[0].headers["range"], "bytes=0-31")
+        self.assertEqual(seen[0].url.path, "/storage/v1/object/authenticated/application-form-attachments/draft/file.pdf")
+
+    async def test_rejects_changed_content_even_when_size_matches(self):
+        records = [{"object_path": "draft/file.pdf", "filename": "file.pdf", "size_bytes": 1024}]
+        storage = SimpleNamespace(
+            get_object_metadata=AsyncMock(return_value=ObjectMetadata(1024, "application/pdf")),
+            get_object_signature=AsyncMock(return_value=b"<html>"),
+        )
+        with self.assertRaises(HTTPException) as context:
+            await validate_uploaded_attachments(storage, records)
+        self.assertEqual(context.exception.status_code, 409)
+
+    async def test_rejects_unverifiable_size_before_reading_content(self):
+        records = [{"object_path": "draft/file.pdf", "filename": "file.pdf", "size_bytes": 1024}]
+        storage = SimpleNamespace(
+            get_object_metadata=AsyncMock(return_value=ObjectMetadata(None, "application/pdf")),
+            get_object_signature=AsyncMock(),
+        )
+        with self.assertRaises(HTTPException) as context:
+            await validate_uploaded_attachments(storage, records)
+        self.assertEqual(context.exception.status_code, 409)
+        storage.get_object_signature.assert_not_awaited()
+
+    async def test_draft_limit_takes_lock_before_count(self):
+        calls = []
+
+        async def execute(_statement):
+            calls.append("lock")
+
+        async def scalar(_statement):
+            calls.append("count")
+            return 5
+
+        session = SimpleNamespace(execute=execute, scalar=scalar)
+        with self.assertRaises(HTTPException) as context:
+            await enforce_public_draft_limit(session, "a" * 64, Settings(public_submission_rate_limit=5))
+        self.assertEqual(context.exception.status_code, 429)
+        self.assertEqual(calls, ["lock", "count"])
 
 
 if __name__ == "__main__":
