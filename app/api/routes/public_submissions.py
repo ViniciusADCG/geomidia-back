@@ -219,7 +219,46 @@ def validate_public_vehicle_rule(rule: MediaRule, payload: PublicNewProcessPaylo
     classification = payload.vehicle.area_rule_classification
     if rule.area_threshold_m2 is None and classification is not None:
         raise HTTPException(status_code=422, detail="Este tipo de veiculo nao usa classificacao de area.")
+    observed_threshold = payload.vehicle.area_rule_threshold_m2
+    # Older form tabs do not send the displayed threshold. Their classification
+    # is checked against the active rule and the draft still records a snapshot.
+    if observed_threshold is not None and observed_threshold != rule.area_threshold_m2:
+        raise HTTPException(status_code=409, detail="O limite de area mudou. Confira e responda novamente.")
     calculate_rule_radius(rule, payload.vehicle.area_m2, classification)
+
+
+def area_rule_snapshot(rule: MediaRule) -> dict:
+    return {
+        "base_radius_meters": rule.base_radius_meters,
+        "area_threshold_m2": rule.area_threshold_m2,
+        "radius_above_threshold_meters": rule.radius_above_threshold_meters,
+    }
+
+
+def validate_draft_area_rule(draft: PublicSubmissionDraft, rule: MediaRule,
+                             payload: PublicNewProcessPayload) -> None:
+    if payload.vehicle.area_rule_classification is None:
+        return
+    snapshot = draft.payload.get("_area_rule_snapshot")
+    if snapshot is not None:
+        if snapshot != area_rule_snapshot(rule):
+            raise HTTPException(status_code=409, detail="A regra de area mudou. Confira e responda novamente.")
+        return
+
+    # Old backends stored neither the displayed threshold nor a rule snapshot.
+    # A legacy draft is safe to finish only when the rule existed and was not
+    # updated after the draft was created. Missing/naive timestamps fail closed.
+    created_at = draft.created_at
+    rule_created_at = getattr(rule, "created_at", None)
+    rule_updated_at = getattr(rule, "updated_at", None)
+    if (not all(isinstance(value, datetime) and value.tzinfo is not None
+                for value in (created_at, rule_created_at, rule_updated_at))
+            or rule_created_at > created_at or rule_updated_at >= created_at
+            or rule_updated_at < rule_created_at):
+        raise HTTPException(
+            status_code=409,
+            detail="A regra de area mudou ou nao pode ser confirmada. Confira e responda novamente.",
+        )
 
 
 @router.get("/regras", response_model=list[dict])
@@ -365,7 +404,7 @@ async def initiate_public_submission(
         id=draft_id,
         token_hash=sha256(token.encode()).hexdigest(),
         client_fingerprint=fingerprint,
-        payload=body.payload.model_dump(mode="json"),
+        payload={**body.payload.model_dump(mode="json"), "_area_rule_snapshot": area_rule_snapshot(rule)},
         attachments=attachment_records,
     )
     session.add(draft)
@@ -416,6 +455,7 @@ async def finalize_public_submission(
     public_payload = PublicNewProcessPayload.model_validate(draft.payload)
     validated = application_form_from_public(public_payload)
     rule = await active_rule_for_type(validated.media_type.value, session)
+    validate_draft_area_rule(draft, rule, public_payload)
     validate_public_vehicle_rule(rule, public_payload)
     finalized_at = datetime.now(UTC)
     asset = MediaAsset(

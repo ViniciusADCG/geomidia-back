@@ -41,14 +41,6 @@ async def active_rule_for_type(media_type: str, session: AsyncSession) -> MediaR
     return rule
 
 
-async def refresh_asset_radii(rule: MediaRule, session: AsyncSession) -> None:
-    assets = await session.scalars(select(MediaAsset).where(MediaAsset.media_type == rule.media_type))
-    for asset in assets:
-        if rule.area_threshold_m2 is not None and asset.area_m2 is None and asset.area_rule_classification is None:
-            continue
-        asset.radius_meters = calculate_rule_radius(rule, asset.area_m2, asset.area_rule_classification)
-
-
 async def get_rule_or_404(rule_id: UUID, session: AsyncSession) -> MediaRule:
     rule = await session.get(MediaRule, rule_id)
     if rule is None:
@@ -74,7 +66,6 @@ async def create_media_rule(
     session.add(rule)
     try:
         await session.flush()
-        await refresh_asset_radii(rule, session)
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
@@ -101,7 +92,6 @@ async def update_media_rule(
 
     for field, value in validated.model_dump(mode="json").items():
         setattr(rule, field, value)
-    await refresh_asset_radii(rule, session)
     await session.commit()
     await session.refresh(rule)
     return rule

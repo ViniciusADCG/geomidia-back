@@ -137,6 +137,34 @@ class MediaAssetRead(MediaAssetBase):
     updated_at: datetime
 
 
+class RadiusReassessmentPreview(BaseModel):
+    asset_id: UUID
+    registered_radius_meters: int
+    current_radius_meters: int | None
+    condition: str
+    can_reassess: bool
+    reason_unavailable: str | None
+    rule_id: UUID | None
+    rule_updated_at: datetime | None
+    rule_base_radius_meters: int | None
+    rule_area_threshold_m2: float | None
+    rule_radius_above_threshold_meters: int | None
+
+
+class RadiusReassessmentConfirm(BaseModel):
+    reason: str = Field(min_length=10, max_length=1000)
+    expected_registered_radius_meters: int = Field(gt=0)
+    expected_rule_updated_at: datetime
+
+    @field_validator("reason")
+    @classmethod
+    def require_reason(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 10:
+            raise ValueError("Informe um motivo com pelo menos 10 caracteres.")
+        return value
+
+
 class MediaAssetPage(BaseModel):
     items: list[MediaAssetRead]
     total: int
@@ -365,6 +393,7 @@ class PublicVehicleInput(BaseModel):
     number_of_faces: str = Field(alias="quantidadeFaces", min_length=1, max_length=30)
     area_m2: float | None = Field(default=None, alias="areaM2", gt=0)
     area_rule_classification: AreaRuleClassification | None = Field(default=None, alias="areaRuleClassification")
+    area_rule_threshold_m2: float | None = Field(default=None, alias="areaRuleThresholdM2", gt=0)
     bottom_height_m: float | None = Field(default=None, alias="alturaBordaInferiorM", ge=0)
 
     @model_validator(mode="after")

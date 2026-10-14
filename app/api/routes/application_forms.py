@@ -15,7 +15,6 @@ from app.api.routes.media_assets import (
     ensure_direct_status_change_allowed,
     log_activity,
 )
-from app.api.routes.media_rules import active_rule_for_type, calculate_rule_radius
 from app.core.security import require_roles
 from app.db.models import ActivityLog, ApplicationForm, ApplicationFormAttachment, MediaAsset, User
 from app.db.session import get_session
@@ -117,11 +116,6 @@ async def update_linked_application_form(
             official_code = (asset_changes.pop("official_process_code") or "").strip() or None
         else:
             official_code = asset.official_process_code
-        radius = asset.radius_meters
-        if "media_type" in asset_changes and validated_asset.media_type.value != asset.media_type:
-            rule = await active_rule_for_type(validated_asset.media_type.value, session)
-            radius = calculate_rule_radius(rule, validated_asset.area_m2, validated_asset.area_rule_classification)
-
         for field in form_changes:
             if field != "expiration_date":
                 setattr(application_form, field, form_values[field])
@@ -133,7 +127,6 @@ async def update_linked_application_form(
                 value = validated_asset_values.get(field, value)
             setattr(asset, field, value)
         asset.official_process_code = official_code
-        asset.radius_meters = radius
 
         if asset.status == MediaStatus.approved.value:
             await session.execute(select(func.pg_advisory_xact_lock(APPROVAL_LOCK_ID)))
@@ -283,9 +276,6 @@ async def update_application_form(
     asset_values = asset_data_from_form(validated)
     for field, value in asset_values.items():
         setattr(application_form.asset, field, value)
-    rule = await active_rule_for_type(validated.media_type.value, session)
-    application_form.asset.radius_meters = calculate_rule_radius(rule, validated.area_m2, validated.area_rule_classification)
-
     after = asset_snapshot(application_form.asset)
     changed = {
         field: {"before": before.get(field), "after": value}

@@ -5,7 +5,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -86,14 +86,7 @@ class ApplicationFormPatchTests(unittest.TestCase):
         session, request, user = update_context(application_form)
         payload = ApplicationFormUpdate(company_cnpj="44555666000177")
 
-        with (
-            patch(
-                "app.api.routes.application_forms.active_rule_for_type",
-                new=AsyncMock(return_value=object()),
-            ),
-            patch("app.api.routes.application_forms.calculate_rule_radius", return_value=80),
-        ):
-            result = asyncio.run(update_application_form(application_form.id, payload, request, session, user))
+        result = asyncio.run(update_application_form(application_form.id, payload, request, session, user))
 
         serialized = ApplicationFormRead.model_validate(result)
         self.assertEqual(application_form.company_cnpj, "44555666000177")
@@ -102,6 +95,7 @@ class ApplicationFormPatchTests(unittest.TestCase):
         self.assertIs(application_form.asset, asset)
         self.assertEqual((application_form.area_m2, application_form.bottom_height_m), (12, 4))
         self.assertEqual((asset.area_m2, asset.bottom_height_m), (12, 4))
+        self.assertEqual(asset.radius_meters, 80)
         session.commit.assert_awaited_once()
         session.refresh.assert_awaited_once_with(application_form)
 
@@ -111,14 +105,7 @@ class ApplicationFormPatchTests(unittest.TestCase):
         session, request, user = update_context(application_form)
         payload = ApplicationFormUpdate(company_cnpj=None)
 
-        with (
-            patch(
-                "app.api.routes.application_forms.active_rule_for_type",
-                new=AsyncMock(return_value=object()),
-            ),
-            patch("app.api.routes.application_forms.calculate_rule_radius", return_value=80),
-        ):
-            result = asyncio.run(update_application_form(application_form.id, payload, request, session, user))
+        result = asyncio.run(update_application_form(application_form.id, payload, request, session, user))
 
         serialized = ApplicationFormRead.model_validate(result)
         self.assertIsNone(application_form.company_cnpj)
@@ -133,17 +120,11 @@ class ApplicationFormPatchTests(unittest.TestCase):
         application_form.bottom_height_m = asset.bottom_height_m = None
         application_form.area_rule_classification = asset.area_rule_classification = "above_limit"
         session, request, user = update_context(application_form)
-        with (
-            patch("app.api.routes.application_forms.active_rule_for_type", new=AsyncMock(return_value=object())),
-            patch("app.api.routes.application_forms.calculate_rule_radius", return_value=1000) as radius,
-        ):
-            asyncio.run(update_application_form(
-                application_form.id, ApplicationFormUpdate(company_responsible="Empresa Nova"),
-                request, session, user,
-            ))
-        radius.assert_called_once()
-        self.assertIsNone(radius.call_args.args[1])
-        self.assertEqual(radius.call_args.args[2], "above_limit")
+        asyncio.run(update_application_form(
+            application_form.id, ApplicationFormUpdate(company_responsible="Empresa Nova"),
+            request, session, user,
+        ))
+        self.assertEqual(asset.radius_meters, 80)
         self.assertEqual((asset.area_m2, asset.bottom_height_m), (None, None))
         self.assertEqual(asset.area_rule_classification, "above_limit")
 
