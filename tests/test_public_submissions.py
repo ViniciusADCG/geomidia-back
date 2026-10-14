@@ -26,7 +26,12 @@ from app.api.routes.public_submissions import (
 )
 from app.core.config import Settings
 from app.db.models import ApplicationForm, MediaAsset, MediaRule
-from app.schemas import AreaRuleClassification, PublicAttachmentInput, PublicNewProcessPayload
+from app.schemas import (
+    PUBLIC_ATTACHMENT_MAX_BYTES,
+    AreaRuleClassification,
+    PublicAttachmentInput,
+    PublicNewProcessPayload,
+)
 from app.services.storage import ObjectMetadata, StorageConfigurationError, SupabaseStorage
 
 
@@ -62,14 +67,17 @@ def valid_public_payload(**overrides):
     return PublicNewProcessPayload.model_validate(data)
 
 
-def attachment(category: str, index: int = 0, *, filename: str = "documento.pdf", content_type: str = "application/pdf"):
+def attachment(
+    category: str, index: int = 0, *, filename: str = "documento.pdf",
+    content_type: str = "application/pdf", size_bytes: int = 1024,
+):
     return PublicAttachmentInput.model_validate(
         {
             "idCliente": f"{category}:{index}",
             "categoria": category,
             "nome": filename,
             "tipoConteudo": content_type,
-            "tamanhoBytes": 1024,
+            "tamanhoBytes": size_bytes,
         }
     )
 
@@ -86,6 +94,12 @@ def valid_manifest():
 
 
 class PublicSubmissionTests(unittest.TestCase):
+    def test_public_attachment_schema_accepts_25_mib_and_rejects_larger_file(self):
+        self.assertEqual(PUBLIC_ATTACHMENT_MAX_BYTES, 26_214_400)
+        self.assertEqual(attachment("artRrt", size_bytes=PUBLIC_ATTACHMENT_MAX_BYTES).size_bytes, PUBLIC_ATTACHMENT_MAX_BYTES)
+        with self.assertRaises(ValidationError):
+            attachment("artRrt", size_bytes=PUBLIC_ATTACHMENT_MAX_BYTES + 1)
+
     def test_uploaded_content_must_match_file_type(self):
         valid = {
             "a.pdf": b"%PDF-1.7\n",
@@ -247,6 +261,30 @@ class PublicSubmissionTests(unittest.TestCase):
 
 
 class PublicUploadSecurityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_storage_accepts_signed_pdf_above_old_limit_through_25_mib(self):
+        for size in (11 * 1024 * 1024, PUBLIC_ATTACHMENT_MAX_BYTES):
+            with self.subTest(size=size):
+                records = [{"object_path": "draft/file.pdf", "filename": "file.pdf", "size_bytes": size}]
+                storage = SimpleNamespace(
+                    get_object_metadata=AsyncMock(return_value=ObjectMetadata(size, "application/pdf")),
+                    get_object_signature=AsyncMock(return_value=b"%PDF-1.7"),
+                )
+                await validate_uploaded_attachments(storage, records)
+                storage.get_object_signature.assert_awaited_once()
+
+    async def test_storage_rejects_file_above_25_mib(self):
+        size = PUBLIC_ATTACHMENT_MAX_BYTES + 1
+        records = [{"object_path": "draft/file.pdf", "filename": "file.pdf", "size_bytes": PUBLIC_ATTACHMENT_MAX_BYTES}]
+        storage = SimpleNamespace(
+            get_object_metadata=AsyncMock(return_value=ObjectMetadata(size, "application/pdf")),
+            get_object_signature=AsyncMock(),
+        )
+        with self.assertRaises(HTTPException) as context:
+            await validate_uploaded_attachments(storage, records)
+        self.assertEqual(context.exception.status_code, 409)
+        self.assertIn("25 MiB", context.exception.detail)
+        storage.get_object_signature.assert_not_awaited()
+
     async def test_storage_reads_only_signature_from_authenticated_object(self):
         seen = []
 

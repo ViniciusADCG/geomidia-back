@@ -387,7 +387,7 @@ class PublicNewProcessPayload(BaseModel):
     website: str = Field(default="", max_length=200)
 
 
-PUBLIC_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024
+PUBLIC_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 
 
 class PublicAttachmentInput(BaseModel):

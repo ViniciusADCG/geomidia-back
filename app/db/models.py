@@ -267,7 +267,7 @@ class ApplicationFormAttachment(Base):
     application_form: Mapped[ApplicationForm] = relationship(back_populates="attachments")
 
     __table_args__ = (
-        CheckConstraint("size_bytes > 0 and size_bytes <= 10485760", name="ck_application_form_attachments_size"),
+        CheckConstraint("size_bytes > 0 and size_bytes <= 26214400", name="ck_application_form_attachments_size"),
         {"schema": "public"},
     )
 
