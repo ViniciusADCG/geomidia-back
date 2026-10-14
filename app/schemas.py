@@ -282,6 +282,13 @@ class ApplicationFormRead(ApplicationFormBase):
     updated_at: datetime
 
 
+class ApplicationFormPage(BaseModel):
+    items: list[ApplicationFormRead]
+    total: int
+    limit: int
+    offset: int
+
+
 class LinkedApplicationFormFields(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
