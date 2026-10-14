@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.routes.media_rules import active_rule_for_type, calculate_rule_radius
 from app.core.security import require_roles
-from app.db.models import ActivityLog, ApplicationForm, MediaAsset, ProcessCounter, User
+from app.db.models import ActivityLog, ApplicationForm, MediaAsset, MediaRule, ProcessCounter, User
 from app.db.session import get_session
 from app.domain.rules import AssetForAnalysis, evaluate_conflicts
 from app.schemas import (
@@ -29,6 +29,8 @@ from app.schemas import (
     MediaStatsRead,
     MediaStatus,
     MediaType,
+    RadiusReassessmentConfirm,
+    RadiusReassessmentPreview,
 )
 
 router = APIRouter(prefix="/media-assets", tags=["media-assets"])
@@ -613,6 +615,87 @@ async def create_media_asset(
     return asset_for_user(asset, current_user)
 
 
+def reassessment_preview(asset: MediaAsset, rule: MediaRule | None) -> RadiusReassessmentPreview:
+    condition = "area_m2 real" if asset.area_m2 is not None else (
+        "classificacao historica" if asset.area_rule_classification else "sem informacao de area"
+    )
+    unavailable = None
+    if rule is None or not rule.is_active:
+        unavailable = "Nao existe regra ativa para este tipo de veiculo."
+    elif rule.area_threshold_m2 is not None and asset.area_m2 is None:
+        unavailable = (
+            "A classificacao anterior nao pode ser reinterpretada sob o limite atual; "
+            "obtenha nova informacao verificavel de area."
+            if asset.area_rule_classification else
+            "A regra atual exige informacao verificavel de area."
+        )
+    radius = None if unavailable else calculate_rule_radius(rule, asset.area_m2)
+    return RadiusReassessmentPreview(
+        asset_id=asset.id,
+        registered_radius_meters=asset.radius_meters,
+        current_radius_meters=radius,
+        condition=condition,
+        can_reassess=unavailable is None,
+        reason_unavailable=unavailable,
+        rule_id=rule.id if rule else None,
+        rule_updated_at=rule.updated_at if rule else None,
+        rule_base_radius_meters=rule.base_radius_meters if rule else None,
+        rule_area_threshold_m2=rule.area_threshold_m2 if rule else None,
+        rule_radius_above_threshold_meters=rule.radius_above_threshold_meters if rule else None,
+    )
+
+
+@router.get("/{asset_id}/radius-reassessment", response_model=RadiusReassessmentPreview)
+async def preview_radius_reassessment(
+    asset_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    _: User = Depends(require_roles("admin")),
+) -> RadiusReassessmentPreview:
+    asset = await get_asset_or_404(asset_id, session)
+    rule = await session.scalar(select(MediaRule).where(MediaRule.media_type == asset.media_type))
+    return reassessment_preview(asset, rule)
+
+
+@router.post("/{asset_id}/radius-reassessment", response_model=MediaAssetRead)
+async def confirm_radius_reassessment(
+    asset_id: UUID,
+    payload: RadiusReassessmentConfirm,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(require_roles("admin")),
+) -> MediaAssetRead:
+    asset = await session.scalar(select(MediaAsset).where(MediaAsset.id == asset_id).with_for_update())
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Ativo nao encontrado.")
+    rule = await session.scalar(select(MediaRule).where(MediaRule.media_type == asset.media_type).with_for_update())
+    preview = reassessment_preview(asset, rule)
+    if not preview.can_reassess:
+        raise HTTPException(status_code=422, detail=preview.reason_unavailable)
+    if (asset.radius_meters != payload.expected_registered_radius_meters
+            or rule.updated_at != payload.expected_rule_updated_at):
+        raise HTTPException(status_code=409, detail="Ativo ou regra mudou. Abra a previa novamente.")
+    previous_radius = asset.radius_meters
+    asset.radius_meters = preview.current_radius_meters
+    session.add(log_activity(
+        asset, ActivityType.edicao, f"Raio do processo {asset.process_code} reavaliado.",
+        current_user, request.state.request_id,
+        {
+            "radius_meters": {"before": previous_radius, "after": asset.radius_meters},
+            "reason": payload.reason,
+            "rule": {
+                "id": str(rule.id), "updated_at": rule.updated_at.isoformat(),
+                "base_radius_meters": rule.base_radius_meters,
+                "area_threshold_m2": rule.area_threshold_m2,
+                "radius_above_threshold_meters": rule.radius_above_threshold_meters,
+            },
+            "condition": preview.condition,
+        },
+    ))
+    await session.commit()
+    await session.refresh(asset)
+    return asset_for_user(asset, current_user)
+
+
 @router.patch("/{asset_id}", response_model=MediaAssetRead)
 async def update_media_asset(
     asset_id: UUID,
@@ -651,9 +734,6 @@ async def update_media_asset(
     for field, value in final_data.items():
         setattr(asset, field, value)
     asset.official_process_code = official_process_code
-    rule = await active_rule_for_type(asset.media_type, session)
-    asset.radius_meters = calculate_rule_radius(rule, asset.area_m2, asset.area_rule_classification)
-
     if asset.status == MediaStatus.approved.value:
         await session.execute(select(func.pg_advisory_xact_lock(APPROVAL_LOCK_ID)))
         await session.flush()

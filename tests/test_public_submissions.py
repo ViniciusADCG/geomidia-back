@@ -4,22 +4,27 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 from fastapi import HTTPException
 from pydantic import ValidationError
+from starlette.requests import Request
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from app.api.routes.application_forms import asset_data_from_form
+from app.api.routes.media_rules import calculate_rule_radius
 from app.api.routes.public_submissions import (
     application_form_from_public,
+    area_rule_snapshot,
     enforce_public_draft_limit,
+    initiate_public_submission,
     matches_file_signature,
     public_vehicle_rules,
     safe_filename,
     validate_attachment_manifest,
+    validate_draft_area_rule,
     validate_public_vehicle_rule,
     validate_submission_timing,
     validate_uploaded_attachments,
@@ -31,6 +36,7 @@ from app.schemas import (
     AreaRuleClassification,
     PublicAttachmentInput,
     PublicNewProcessPayload,
+    PublicSubmissionInitiate,
 )
 from app.services.storage import ObjectMetadata, StorageConfigurationError, SupabaseStorage
 
@@ -147,6 +153,7 @@ class PublicSubmissionTests(unittest.TestCase):
             with self.subTest(value=value):
                 payload = valid_public_payload(veiculoDivulgacao={
                     "tipo": "painel de led", "quantidadeFaces": "Duas", "areaRuleClassification": value,
+                    "areaRuleThresholdM2": 5,
                 })
                 payload = PublicNewProcessPayload.model_validate(payload.model_dump(mode="json"))
                 validate_public_vehicle_rule(rule, payload)
@@ -158,6 +165,79 @@ class PublicSubmissionTests(unittest.TestCase):
                 self.assertEqual(form.area_rule_classification, AreaRuleClassification(value))
                 self.assertEqual(form_row.area_rule_classification, value)
                 self.assertEqual(asset_row.area_rule_classification, value)
+
+    def test_changed_rule_during_draft_requires_new_area_answer(self):
+        original = MediaRule(base_radius_meters=250, area_threshold_m2=5, radius_above_threshold_meters=1000)
+        current = MediaRule(base_radius_meters=250, area_threshold_m2=8, radius_above_threshold_meters=1000)
+        payload = valid_public_payload(veiculoDivulgacao={
+            "tipo": "painel de led", "quantidadeFaces": "Duas", "areaRuleClassification": "above_limit",
+            "areaRuleThresholdM2": 5,
+        })
+        draft = SimpleNamespace(payload={"_area_rule_snapshot": area_rule_snapshot(original)})
+        with self.assertRaises(HTTPException) as caught:
+            validate_draft_area_rule(draft, current, payload)
+        self.assertEqual(caught.exception.status_code, 409)
+        with self.assertRaises(HTTPException):
+            validate_public_vehicle_rule(current, payload)
+        validate_draft_area_rule(draft, original, payload)
+
+    def test_legacy_area_classification_uses_current_rule_without_inventing_area(self):
+        payload = valid_public_payload(veiculoDivulgacao={
+            "tipo": "painel de led", "quantidadeFaces": "Duas", "areaRuleClassification": "above_limit",
+        })
+        rule = MediaRule(base_radius_meters=250, area_threshold_m2=5, radius_above_threshold_meters=1000)
+        validate_public_vehicle_rule(rule, payload)
+        self.assertEqual(calculate_rule_radius(rule, payload.vehicle.area_m2,
+                                               payload.vehicle.area_rule_classification), 1000)
+        self.assertIsNone(payload.vehicle.area_m2)
+        self.assertEqual(payload.vehicle.area_rule_classification, AreaRuleClassification.above_limit)
+
+    def test_legacy_draft_without_snapshot_needs_unchanged_rule(self):
+        created_at = datetime.now(UTC)
+        rule = MediaRule(
+            base_radius_meters=250, area_threshold_m2=5, radius_above_threshold_meters=1000,
+            created_at=created_at - timedelta(days=1), updated_at=created_at - timedelta(minutes=1),
+        )
+        payload = valid_public_payload(veiculoDivulgacao={
+            "tipo": "painel de led", "quantidadeFaces": "Duas", "areaRuleClassification": "above_limit",
+        })
+        draft = SimpleNamespace(payload={}, created_at=created_at)
+        validate_draft_area_rule(draft, rule, payload)
+        rule.updated_at = created_at + timedelta(seconds=1)
+        with self.assertRaises(HTTPException) as changed:
+            validate_draft_area_rule(draft, rule, payload)
+        self.assertEqual(changed.exception.status_code, 409)
+        self.assertIn("regra de area mudou", changed.exception.detail)
+
+        rule.updated_at = None
+        with self.assertRaises(HTTPException) as unknown:
+            validate_draft_area_rule(draft, rule, payload)
+        self.assertEqual(unknown.exception.status_code, 409)
+        rule.updated_at = created_at
+        with self.assertRaises(HTTPException):
+            validate_draft_area_rule(draft, rule, payload)
+        rule.updated_at = created_at - timedelta(minutes=1)
+        rule.created_at = created_at + timedelta(seconds=1)
+        with self.assertRaises(HTTPException):
+            validate_draft_area_rule(draft, rule, payload)
+
+    def test_fixed_radius_legacy_draft_needs_no_rule_snapshot(self):
+        payload = valid_public_payload(veiculoDivulgacao={"tipo": "outdoor", "quantidadeFaces": "Duas"})
+        draft = SimpleNamespace(payload={}, created_at=datetime.now(UTC))
+        rule = MediaRule(base_radius_meters=80, area_threshold_m2=None, radius_above_threshold_meters=None)
+        validate_draft_area_rule(draft, rule, payload)
+        validate_public_vehicle_rule(rule, payload)
+
+    def test_public_new_asset_keeps_coordinates_and_uses_current_radius(self):
+        payload = valid_public_payload(veiculoDivulgacao={
+            "tipo": "painel de led", "quantidadeFaces": "Duas", "areaRuleClassification": "above_limit",
+            "areaRuleThresholdM2": 5,
+        })
+        form = application_form_from_public(payload)
+        rule = MediaRule(base_radius_meters=250, area_threshold_m2=5, radius_above_threshold_meters=1000)
+        validate_public_vehicle_rule(rule, payload)
+        self.assertEqual((form.latitude, form.longitude), (-20.46, -54.61))
+        self.assertEqual(calculate_rule_radius(rule, form.area_m2, form.area_rule_classification), 1000)
 
     def test_area_rule_rejects_missing_classification(self):
         rule = MediaRule(base_radius_meters=250, area_threshold_m2=5, radius_above_threshold_meters=1000)
@@ -258,6 +338,35 @@ class PublicSubmissionTests(unittest.TestCase):
     def test_supabase_url_requires_protocol(self):
         with self.assertRaises(StorageConfigurationError):
             SupabaseStorage(Settings(supabase_url="example.supabase.co", supabase_service_role_key="sb_secret_example"))
+
+
+class PublicRolloutCompatibilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_legacy_initiation_persists_current_rule_snapshot(self):
+        payload = valid_public_payload(veiculoDivulgacao={
+            "tipo": "painel de led", "quantidadeFaces": "Duas", "areaRuleClassification": "within_limit",
+        })
+        body = PublicSubmissionInitiate(payload=payload, attachments=valid_manifest())
+        rule = MediaRule(base_radius_meters=250, area_threshold_m2=5, radius_above_threshold_meters=1000)
+        storage = SimpleNamespace(create_signed_upload=AsyncMock(
+            return_value=SimpleNamespace(signed_url="https://upload.example.test/file"),
+        ))
+        session = SimpleNamespace(add=MagicMock(), commit=AsyncMock())
+        request = Request({
+            "type": "http", "headers": [(b"origin", b"http://localhost:5173")],
+            "client": ("127.0.0.1", 1234),
+        })
+        with patch("app.api.routes.public_submissions.active_rule_for_type", new_callable=AsyncMock,
+                   return_value=rule), patch(
+            "app.api.routes.public_submissions.enforce_public_draft_limit", new_callable=AsyncMock,
+        ), patch("app.api.routes.public_submissions.storage_or_503", return_value=storage):
+            result = await initiate_public_submission(body, request, session)
+        draft = session.add.call_args.args[0]
+        self.assertEqual(result.draft_id, draft.id)
+        self.assertEqual(draft.payload["_area_rule_snapshot"], area_rule_snapshot(rule))
+        self.assertIsNone(draft.payload["vehicle"]["area_m2"])
+        self.assertEqual(draft.payload["vehicle"]["area_rule_classification"], "within_limit")
+        self.assertIsNone(draft.payload["vehicle"]["area_rule_threshold_m2"])
+        session.commit.assert_awaited_once()
 
 
 class PublicUploadSecurityTests(unittest.IsolatedAsyncioTestCase):
