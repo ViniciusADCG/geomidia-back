@@ -82,6 +82,24 @@ class SupabaseStorage:
             content_type=response.headers.get("content-type"),
         )
 
+    async def get_object_signature(self, object_path: str) -> bytes:
+        """Read only the first bytes of an uploaded object, even if Range is ignored."""
+        encoded_path = quote(f"{self.bucket}/{object_path}", safe="/")
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                async with client.stream(
+                    "GET",
+                    f"{self.storage_url}/object/authenticated/{encoded_path}",
+                    headers={**self.headers, "Range": "bytes=0-31"},
+                ) as response:
+                    if response.is_error:
+                        raise StorageRequestError("Nao foi possivel verificar o conteudo do anexo.")
+                    async for chunk in response.aiter_bytes(chunk_size=32):
+                        return chunk[:32]
+        except httpx.HTTPError as exc:
+            raise StorageRequestError("Nao foi possivel verificar o conteudo do anexo.") from exc
+        return b""
+
     async def create_download_url(self, object_path: str, expires_in: int = 60) -> str:
         encoded_path = quote(f"{self.bucket}/{object_path}", safe="/")
         try:
