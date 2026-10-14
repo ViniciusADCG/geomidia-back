@@ -75,6 +75,34 @@ class ReceiptTests(unittest.TestCase):
 
 
 class ReceiptDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_finalized_draft_without_protocol_does_not_report_success(self):
+        token = "x" * 32
+        draft = SimpleNamespace(token_hash=sha256(token.encode()).hexdigest(), finalized_at=datetime.now(UTC),
+                                process_code=None)
+        session = SimpleNamespace(scalar=AsyncMock(return_value=draft))
+        request = Request({"type": "http", "headers": [(b"origin", b"http://localhost:5173")]})
+        with self.assertRaises(HTTPException) as invalid:
+            await finalize_public_submission(uuid4(), PublicSubmissionFinalize(token=token), request, session)
+        self.assertEqual(invalid.exception.status_code, 409)
+
+    async def test_unknown_draft_and_wrong_token_remain_hidden(self):
+        token = "x" * 32
+        request = Request({"type": "http", "headers": [(b"origin", b"http://localhost:5173")]})
+        session = SimpleNamespace(scalar=AsyncMock(return_value=None))
+        with self.assertRaises(HTTPException) as missing:
+            await finalize_public_submission(uuid4(), PublicSubmissionFinalize(token=token), request, session)
+        self.assertEqual(missing.exception.status_code, 404)
+
+        session.scalar.return_value = SimpleNamespace(token_hash=sha256(b"other-token").hexdigest())
+        with self.assertRaises(HTTPException) as wrong_token:
+            await finalize_public_submission(uuid4(), PublicSubmissionFinalize(token=token), request, session)
+        self.assertEqual(wrong_token.exception.status_code, 404)
+
+        forbidden_request = Request({"type": "http", "headers": [(b"origin", b"https://untrusted.example")]})
+        with self.assertRaises(HTTPException) as forbidden:
+            await finalize_public_submission(uuid4(), PublicSubmissionFinalize(token=token), forbidden_request, session)
+        self.assertEqual(forbidden.exception.status_code, 403)
+
     async def test_repeating_a_finalized_submission_does_not_send_email(self):
         token = "x" * 32
         draft = SimpleNamespace(
