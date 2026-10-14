@@ -340,7 +340,9 @@ async def finalize_public_submission(
     if draft.finalized_at:
         if (draft.process_code or "").startswith("HESP-"):
             raise HTTPException(status_code=404, detail="Solicitacao nao encontrada.")
-        return result_for_receipt(draft.process_code or "")
+        if not draft.process_code:
+            raise HTTPException(status_code=409, detail="Finalizacao sem protocolo. Contate o suporte.")
+        return result_for_receipt(draft.process_code)
     if draft.payload.get("process_type") != "PROCESSO_NOVO":
         raise HTTPException(status_code=404, detail="Solicitacao nao encontrada.")
     if datetime.now(UTC) - draft.created_at.astimezone(UTC) > DRAFT_LIFETIME:
