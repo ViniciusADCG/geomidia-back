@@ -1,5 +1,11 @@
 # GeoMídia backend
 
+## Compatibilidade temporária do formulário público
+
+Abas antigas podem enviar `areaRuleClassification` sem `areaRuleThresholdM2` em `/iniciar`. O backend aceita esse formato legado pela regra ativa e grava o snapshot completo da regra no JSONB do novo draft. Não cria `area_m2` nem altera a classificação informada. Drafts antigos, criados sem snapshot, só podem finalizar com classificação de área quando os timestamps com fuso existem, `MediaRule.created_at` não é posterior a `draft.created_at` e `MediaRule.updated_at` é estritamente anterior à criação do draft. Caso contrário, a finalização retorna 409 para nova confirmação. Drafts já finalizados continuam com retry idempotente; tipos sem classificação de área não dependem dessa verificação.
+
+O payload legado não informa qual limite foi mostrado pelo navegador. Se uma aba antiga recebeu `/regras` de cache antes de iniciar, timestamps do servidor não conseguem provar que sua resposta corresponde ao limite exibido. Uma mudança de regra que não possa ser verificada deve exigir nova confirmação; essa limitação precisa ser considerada antes de retirar a compatibilidade legada.
+
 ## Comprovante do processo novo
 
 Depois que `/api/public/solicitacoes/veiculos-divulgacao/{rascunhoId}/finalizar` cria o processo, o backend devolve um protocolo `VEI-01-2026` (ou o próximo número daquele ano). O comprovante pode ser baixado por `POST /api/public/solicitacoes/veiculos-divulgacao/{rascunhoId}/comprovante` com `{ "token": "..." }`. O PDF segue o modelo `VEI-0044-2026.pdf` fornecido com o formulário e usa os dados persistidos. Os anexos ficam no armazenamento privado; por isso, o comprovante lista seus nomes em vez de links temporários que expirariam.

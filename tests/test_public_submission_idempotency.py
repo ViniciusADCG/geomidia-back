@@ -1,7 +1,7 @@
 import asyncio
 import os
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -95,7 +95,7 @@ class PublicSubmissionIdempotencyPostgresTests(unittest.IsolatedAsyncioTestCase)
         self.rule_patch = patch("app.api.routes.public_submissions.active_rule_for_type", new_callable=AsyncMock,
                                 return_value=rule)
         self.storage_patch.start()
-        self.rule_patch.start()
+        self.rule_mock = self.rule_patch.start()
 
     async def asyncTearDown(self):
         if not hasattr(self, "engine"):
@@ -158,6 +158,52 @@ class PublicSubmissionIdempotencyPostgresTests(unittest.IsolatedAsyncioTestCase)
         self.assertEqual(await self.counts(first.protocolo), (1, 1, len(valid_manifest())))
         async with self.sessions() as session:
             self.assertEqual((await session.get(PublicProcessCounter, datetime.now(UTC).year)).last_value, first_counter)
+
+    async def test_legacy_classified_draft_finalizes_once_when_rule_is_unchanged(self):
+        async with self.sessions() as session:
+            draft = await session.get(PublicSubmissionDraft, self.draft_id)
+            draft.payload = valid_public_payload(veiculoDivulgacao={
+                "tipo": "painel de led", "quantidadeFaces": "Duas",
+                "areaRuleClassification": "above_limit",
+            }).model_dump(mode="json")
+            created_at = draft.created_at
+            await session.commit()
+        self.rule_mock.return_value = SimpleNamespace(
+            base_radius_meters=250, area_threshold_m2=5, radius_above_threshold_meters=1000,
+            created_at=created_at - timedelta(days=1), updated_at=created_at - timedelta(minutes=1),
+        )
+        first = await self.finalize()
+        second = await self.finalize()
+        self.assertEqual(first.model_dump(), second.model_dump())
+        self.assertEqual(await self.counts(first.protocolo), (1, 1, len(valid_manifest())))
+        async with self.sessions() as session:
+            asset = await session.scalar(select(MediaAsset).where(MediaAsset.process_code == first.protocolo))
+            self.assertEqual(asset.radius_meters, 1000)
+            self.assertEqual(asset.area_rule_classification, "above_limit")
+            self.assertIsNone(asset.area_m2)
+
+    async def test_legacy_classified_draft_rejects_changed_rule_without_creating_result(self):
+        async with self.sessions() as session:
+            draft = await session.get(PublicSubmissionDraft, self.draft_id)
+            draft.payload = valid_public_payload(veiculoDivulgacao={
+                "tipo": "painel de led", "quantidadeFaces": "Duas",
+                "areaRuleClassification": "within_limit",
+            }).model_dump(mode="json")
+            created_at = draft.created_at
+            previous_assets = await session.scalar(select(func.count()).select_from(MediaAsset))
+            await session.commit()
+        self.rule_mock.return_value = SimpleNamespace(
+            base_radius_meters=250, area_threshold_m2=5, radius_above_threshold_meters=1000,
+            created_at=created_at - timedelta(days=1), updated_at=created_at + timedelta(seconds=1),
+        )
+        with self.assertRaises(HTTPException) as blocked:
+            await self.finalize()
+        self.assertEqual(blocked.exception.status_code, 409)
+        async with self.sessions() as session:
+            draft = await session.get(PublicSubmissionDraft, self.draft_id)
+            self.assertIsNone(draft.finalized_at)
+            self.assertIsNone(draft.process_code)
+            self.assertEqual(await session.scalar(select(func.count()).select_from(MediaAsset)), previous_assets)
 
     async def test_rollback_allows_retry_without_false_finalization(self):
         async with self.sessions() as session:

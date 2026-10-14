@@ -26,11 +26,7 @@ def context(form: ApplicationForm, asset: MediaAsset | None = None):
 
 
 def run_update(form: ApplicationForm, payload: LinkedApplicationFormUpdate, session, request, user):
-    with (
-        patch("app.api.routes.application_forms.active_rule_for_type", new=AsyncMock(return_value=object())),
-        patch("app.api.routes.application_forms.calculate_rule_radius", return_value=80),
-    ):
-        return asyncio.run(update_linked_application_form(form.id, payload, request, session, user))
+    return asyncio.run(update_linked_application_form(form.id, payload, request, session, user))
 
 
 class LinkedApplicationFormTests(unittest.TestCase):
