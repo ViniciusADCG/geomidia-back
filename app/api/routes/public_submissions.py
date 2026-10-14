@@ -147,7 +147,9 @@ async def validate_uploaded_attachments(storage: SupabaseStorage, attachments: l
             if item is None:
                 raise HTTPException(status_code=409, detail=f"O anexo {attachment['filename']} nao foi enviado.")
             size = item.size_bytes
-            if size is None or size < 1 or size > PUBLIC_ATTACHMENT_MAX_BYTES or size != attachment["size_bytes"]:
+            if size is not None and size > PUBLIC_ATTACHMENT_MAX_BYTES:
+                raise HTTPException(status_code=409, detail=f"O anexo {attachment['filename']} excede 25 MiB.")
+            if size is None or size < 1 or size != attachment["size_bytes"]:
                 raise HTTPException(status_code=409, detail=f"O tamanho do anexo {attachment['filename']} e invalido.")
         signatures = await asyncio.gather(*(storage.get_object_signature(item["object_path"]) for item in attachments))
     except StorageRequestError as exc:

@@ -36,7 +36,7 @@ def sample_data() -> RequirementReceiptData:
     )
 
 
-def sample_request(**overrides) -> RequirementResponseInitiate:
+def sample_request(*, attachment_size: int = 1024, **overrides) -> RequirementResponseInitiate:
     payload = {
         "tipoProcesso": "RESPOSTA_COMUNICADO_EXIGENCIA",
         "email": "requerente@example.com",
@@ -51,12 +51,17 @@ def sample_request(**overrides) -> RequirementResponseInitiate:
         "payload": payload,
         "arquivos": [{
             "idCliente": "respostaExigencia:0", "categoria": "respostaExigencia",
-            "nome": "resposta.pdf", "tipoConteudo": "application/pdf", "tamanhoBytes": 1024,
+            "nome": "resposta.pdf", "tipoConteudo": "application/pdf", "tamanhoBytes": attachment_size,
         }],
     })
 
 
 class RequirementReceiptTests(unittest.TestCase):
+    def test_response_attachment_accepts_25_mib_but_not_more(self):
+        self.assertEqual(sample_request(attachment_size=26_214_400).attachments[0].size_bytes, 26_214_400)
+        with self.assertRaises(ValidationError):
+            sample_request(attachment_size=26_214_401)
+
     def test_pdf_is_generated_with_hesp_protocol(self):
         pdf = generate_requirement_receipt_pdf(sample_data())
         self.assertTrue(pdf.startswith(b"%PDF-"))
