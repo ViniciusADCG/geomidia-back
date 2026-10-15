@@ -10,9 +10,9 @@ from sqlalchemy.orm import contains_eager, selectinload
 from app.api.routes.media_assets import (
     APPROVAL_LOCK_ID,
     analyze_asset,
+    approval_conflict_confirmation_detail,
     asset_for_user,
     asset_snapshot,
-    approval_conflict_confirmation_detail,
     conflict_snapshots_match,
     ensure_direct_status_change_allowed,
     log_activity,
