@@ -78,6 +78,19 @@ def approval_conflict_confirmation_detail(analysis: dict[str, Any]) -> dict[str,
     }
 
 
+def conflict_snapshots_match(
+    current: list[dict[str, Any]],
+    confirmed: list[dict[str, Any]] | None,
+) -> bool:
+    if confirmed is None:
+        return False
+
+    def key(item: dict[str, Any]) -> str:
+        return str(item.get("conflicting_asset_id", ""))
+
+    return sorted(current, key=key) == sorted(confirmed, key=key)
+
+
 def to_analysis_asset(asset: MediaAsset) -> AssetForAnalysis:
     return AssetForAnalysis(
         id=asset.id,
@@ -716,6 +729,7 @@ async def update_media_asset(
     before = asset_snapshot(asset)
     update_data = payload.model_dump(exclude_unset=True, mode="json")
     confirm_conflict_approval = update_data.pop("confirm_conflict_approval", False)
+    confirmed_conflicts = update_data.pop("confirmed_conflicts", None)
     if "official_process_code" in update_data:
         update_data["official_process_code"] = (update_data["official_process_code"] or "").strip() or None
     official_process_code = update_data.pop("official_process_code", asset.official_process_code)
@@ -757,7 +771,7 @@ async def update_media_asset(
         await session.flush()
         analysis = await analyze_asset(asset, session)
         if analysis["has_conflict"]:
-            if not confirm_conflict_approval:
+            if not confirm_conflict_approval or not conflict_snapshots_match(analysis["conflicts"], confirmed_conflicts):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=approval_conflict_confirmation_detail(analysis),

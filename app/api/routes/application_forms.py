@@ -13,6 +13,7 @@ from app.api.routes.media_assets import (
     asset_for_user,
     asset_snapshot,
     approval_conflict_confirmation_detail,
+    conflict_snapshots_match,
     ensure_direct_status_change_allowed,
     log_activity,
 )
@@ -79,6 +80,7 @@ async def update_linked_application_form(
         form_changes = payload.form.model_dump(exclude_unset=True, mode="json")
         asset_changes = payload.asset.model_dump(exclude_unset=True, mode="json")
         confirm_conflict_approval = asset_changes.pop("confirm_conflict_approval", False)
+        confirmed_conflicts = asset_changes.pop("confirmed_conflicts", None)
         required_form = {
             name for name, info in ApplicationFormBase.model_fields.items() if info.is_required()
         }
@@ -145,7 +147,7 @@ async def update_linked_application_form(
             await session.flush()
             analysis = await analyze_asset(asset, session)
             if analysis["has_conflict"]:
-                if not confirm_conflict_approval:
+                if not confirm_conflict_approval or not conflict_snapshots_match(analysis["conflicts"], confirmed_conflicts):
                     raise HTTPException(
                         status_code=status.HTTP_409_CONFLICT,
                         detail=approval_conflict_confirmation_detail(analysis),
