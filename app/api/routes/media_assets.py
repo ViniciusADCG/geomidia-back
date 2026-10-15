@@ -70,6 +70,14 @@ def ensure_direct_status_change_allowed(current_status: str, requested_status: s
         )
 
 
+def approval_conflict_confirmation_detail(analysis: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "confirmation_required": True,
+        "message": analysis["message"],
+        "conflicts": analysis["conflicts"],
+    }
+
+
 def to_analysis_asset(asset: MediaAsset) -> AssetForAnalysis:
     return AssetForAnalysis(
         id=asset.id,
@@ -707,6 +715,7 @@ async def update_media_asset(
     asset = await get_asset_or_404(asset_id, session)
     before = asset_snapshot(asset)
     update_data = payload.model_dump(exclude_unset=True, mode="json")
+    confirm_conflict_approval = update_data.pop("confirm_conflict_approval", False)
     if "official_process_code" in update_data:
         update_data["official_process_code"] = (update_data["official_process_code"] or "").strip() or None
     official_process_code = update_data.pop("official_process_code", asset.official_process_code)
@@ -734,15 +743,26 @@ async def update_media_asset(
     for field, value in final_data.items():
         setattr(asset, field, value)
     asset.official_process_code = official_process_code
-    if asset.status == MediaStatus.approved.value:
+    spatial_fields = {"media_type", "latitude", "longitude", "area_m2", "area_rule_classification"}
+    requires_approval_review = (
+        asset.status == MediaStatus.approved.value
+        and (
+            before["status"] != MediaStatus.approved.value
+            or bool(spatial_fields.intersection(update_data))
+        )
+    )
+    approved_conflicts: list[dict[str, Any]] = []
+    if requires_approval_review:
         await session.execute(select(func.pg_advisory_xact_lock(APPROVAL_LOCK_ID)))
         await session.flush()
         analysis = await analyze_asset(asset, session)
         if analysis["has_conflict"]:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={"message": analysis["message"], "conflicts": analysis["conflicts"]},
-            )
+            if not confirm_conflict_approval:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=approval_conflict_confirmation_detail(analysis),
+                )
+            approved_conflicts = analysis["conflicts"]
 
     after = asset_snapshot(asset)
     changed = {
@@ -750,6 +770,8 @@ async def update_media_asset(
         for field, value in after.items()
         if before.get(field) != value
     }
+    if approved_conflicts:
+        changed["conflict_approval"] = {"confirmed": True, "conflicts": approved_conflicts}
     if not changed:
         return asset_for_user(asset, current_user)
 
