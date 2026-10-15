@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
@@ -105,6 +105,8 @@ class MediaAssetCreate(MediaAssetBase):
 
 
 class MediaAssetUpdate(BaseModel):
+    confirm_conflict_approval: bool = False
+    confirmed_conflicts: list[dict[str, Any]] | None = None
     official_process_code: str | None = Field(default=None, max_length=80)
     media_type: MediaType | None = None
     address: str | None = Field(default=None, min_length=3, max_length=255)
@@ -346,6 +348,8 @@ class LinkedMediaAssetFields(BaseModel):
     justification: str | None = None
     contact_name: str | None = Field(default=None, max_length=120)
     attachment_links: str | None = None
+    confirm_conflict_approval: bool = False
+    confirmed_conflicts: list[dict[str, Any]] | None = None
 
 
 class LinkedApplicationFormUpdate(BaseModel):

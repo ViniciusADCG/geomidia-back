@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     create_tables: bool = False
     jwt_secret: str = "development-only-change-me"
     jwt_algorithm: str = "HS256"
-    access_token_minutes: int = 30
+    access_token_minutes: int = 180
     bootstrap_admin_username: str | None = None
     bootstrap_admin_password: str | None = None
     bootstrap_admin_name: str = "Administrador GeoMidia"

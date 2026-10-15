@@ -44,6 +44,85 @@ def new_asset() -> MediaAsset:
 
 
 class MediaAssetWorkflowTests(unittest.TestCase):
+    def test_approval_with_conflicts_requires_confirmation_of_current_conflict_list(self):
+        asset = new_asset()
+        asset.status = "análise"
+        user = User(id=uuid.uuid4(), username="analista", full_name="Analista", password_hash="unused", role="analyst")
+        session = MagicMock(spec=AsyncSession)
+        session.get = AsyncMock(return_value=asset)
+        session.execute = AsyncMock()
+        session.flush = AsyncMock()
+        session.commit = AsyncMock()
+        session.refresh = AsyncMock()
+        request = SimpleNamespace(state=SimpleNamespace(request_id="request-123"))
+        conflicts = [{
+            "conflicting_asset_id": str(uuid.uuid4()),
+            "process_code": "PROC-2026-100",
+            "media_type": "outdoor",
+            "distance_meters": 40.0,
+            "minimum_distance_meters": 80,
+        }]
+        analysis = {"has_conflict": True, "message": "Ponto dentro do raio.", "conflicts": conflicts}
+
+        with patch("app.api.routes.media_assets.analyze_asset", new=AsyncMock(return_value=analysis)):
+            with self.assertRaises(HTTPException) as first_attempt:
+                asyncio.run(update_media_asset(
+                    asset.id, MediaAssetUpdate(status="aprovado"), request, session, user,
+                ))
+
+            self.assertEqual(first_attempt.exception.status_code, 409)
+            self.assertTrue(first_attempt.exception.detail["confirmation_required"])
+            self.assertEqual(first_attempt.exception.detail["conflicts"], conflicts)
+            session.commit.assert_not_awaited()
+
+            asset.status = "análise"  # The dependency rolls back the failed request.
+            with self.assertRaises(HTTPException) as stale_confirmation:
+                asyncio.run(update_media_asset(
+                    asset.id,
+                    MediaAssetUpdate(
+                        status="aprovado", confirm_conflict_approval=True,
+                        confirmed_conflicts=[{**conflicts[0], "distance_meters": 41.0}],
+                    ),
+                    request, session, user,
+                ))
+            self.assertEqual(stale_confirmation.exception.status_code, 409)
+            session.commit.assert_not_awaited()
+
+    def test_confirmed_conflicting_approval_is_audited(self):
+        asset = new_asset()
+        asset.status = "análise"
+        user = User(id=uuid.uuid4(), username="analista", full_name="Analista", password_hash="unused", role="analyst")
+        session = MagicMock(spec=AsyncSession)
+        session.get = AsyncMock(return_value=asset)
+        session.execute = AsyncMock()
+        session.flush = AsyncMock()
+        session.commit = AsyncMock()
+        session.refresh = AsyncMock()
+        request = SimpleNamespace(state=SimpleNamespace(request_id="request-123"))
+        conflicts = [{
+            "conflicting_asset_id": str(uuid.uuid4()),
+            "process_code": "PROC-2026-100",
+            "media_type": "outdoor",
+            "distance_meters": 40.0,
+            "minimum_distance_meters": 80,
+        }]
+        analysis = {"has_conflict": True, "message": "Ponto dentro do raio.", "conflicts": conflicts}
+
+        with patch("app.api.routes.media_assets.analyze_asset", new=AsyncMock(return_value=analysis)):
+            result = asyncio.run(update_media_asset(
+                asset.id,
+                MediaAssetUpdate(
+                    status="aprovado", confirm_conflict_approval=True, confirmed_conflicts=conflicts,
+                ),
+                request, session, user,
+            ))
+
+        self.assertEqual(result.status.value, "aprovado")
+        self.assertEqual(session.add.call_args.args[0].changes["conflict_approval"], {
+            "confirmed": True, "conflicts": conflicts,
+        })
+        session.commit.assert_awaited_once()
+
     def test_official_protocol_preserves_origin_and_is_logged(self):
         asset = new_asset()
         asset.radius_meters = 250

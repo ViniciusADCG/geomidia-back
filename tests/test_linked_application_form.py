@@ -30,6 +30,66 @@ def run_update(form: ApplicationForm, payload: LinkedApplicationFormUpdate, sess
 
 
 class LinkedApplicationFormTests(unittest.TestCase):
+    def test_conflicting_approval_requires_confirmation_of_current_conflicts(self):
+        conflicts = [{
+            "conflicting_asset_id": str(uuid.uuid4()),
+            "process_code": "PROC-2026-100",
+            "media_type": "outdoor",
+            "distance_meters": 40.0,
+            "minimum_distance_meters": 80,
+        }]
+        analysis = {"has_conflict": True, "message": "Ponto dentro do raio.", "conflicts": conflicts}
+
+        form, asset = linked_form()
+        asset.status = "análise"
+        session, request, user = context(form, asset)
+        with patch("app.api.routes.application_forms.analyze_asset", new=AsyncMock(return_value=analysis)):
+            with self.assertRaises(HTTPException) as first_attempt:
+                run_update(form, LinkedApplicationFormUpdate(asset={"status": "aprovado"}), session, request, user)
+            self.assertTrue(first_attempt.exception.detail["confirmation_required"])
+            self.assertEqual(first_attempt.exception.detail["conflicts"], conflicts)
+            session.commit.assert_not_awaited()
+
+        form, asset = linked_form()
+        asset.status = "análise"
+        session, request, user = context(form, asset)
+        with patch("app.api.routes.application_forms.analyze_asset", new=AsyncMock(return_value=analysis)):
+            with self.assertRaises(HTTPException) as stale_confirmation:
+                run_update(form, LinkedApplicationFormUpdate(asset={
+                    "status": "aprovado",
+                    "confirm_conflict_approval": True,
+                    "confirmed_conflicts": [{**conflicts[0], "distance_meters": 41.0}],
+                }), session, request, user)
+            self.assertEqual(stale_confirmation.exception.status_code, 409)
+            session.commit.assert_not_awaited()
+
+    def test_confirmed_conflicting_approval_is_audited(self):
+        form, asset = linked_form()
+        asset.status = "análise"
+        session, request, user = context(form, asset)
+        session.flush = AsyncMock()
+        conflicts = [{
+            "conflicting_asset_id": str(uuid.uuid4()),
+            "process_code": "PROC-2026-100",
+            "media_type": "outdoor",
+            "distance_meters": 40.0,
+            "minimum_distance_meters": 80,
+        }]
+        analysis = {"has_conflict": True, "message": "Ponto dentro do raio.", "conflicts": conflicts}
+
+        with patch("app.api.routes.application_forms.analyze_asset", new=AsyncMock(return_value=analysis)):
+            result = run_update(form, LinkedApplicationFormUpdate(asset={
+                "status": "aprovado",
+                "confirm_conflict_approval": True,
+                "confirmed_conflicts": conflicts,
+            }), session, request, user)
+
+        self.assertEqual(result.asset.status.value, "aprovado")
+        self.assertEqual(session.add.call_args.args[0].changes["conflict_approval"], {
+            "confirmed": True, "conflicts": conflicts,
+        })
+        session.commit.assert_awaited_once()
+
     def test_complete_update_commits_both_and_returns_them(self):
         form, asset = linked_form()
         session, request, user = context(form)

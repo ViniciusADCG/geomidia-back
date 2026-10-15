@@ -10,8 +10,10 @@ from sqlalchemy.orm import contains_eager, selectinload
 from app.api.routes.media_assets import (
     APPROVAL_LOCK_ID,
     analyze_asset,
+    approval_conflict_confirmation_detail,
     asset_for_user,
     asset_snapshot,
+    conflict_snapshots_match,
     ensure_direct_status_change_allowed,
     log_activity,
 )
@@ -77,6 +79,8 @@ async def update_linked_application_form(
 
         form_changes = payload.form.model_dump(exclude_unset=True, mode="json")
         asset_changes = payload.asset.model_dump(exclude_unset=True, mode="json")
+        confirm_conflict_approval = asset_changes.pop("confirm_conflict_approval", False)
+        confirmed_conflicts = asset_changes.pop("confirmed_conflicts", None)
         required_form = {
             name for name, info in ApplicationFormBase.model_fields.items() if info.is_required()
         }
@@ -128,15 +132,27 @@ async def update_linked_application_form(
             setattr(asset, field, value)
         asset.official_process_code = official_code
 
-        if asset.status == MediaStatus.approved.value:
+        spatial_fields = {"media_type", "latitude", "longitude", "area_m2", "area_rule_classification"}
+        spatial_asset_changed = any(
+            getattr(asset, field) != before_asset[field]
+            for field in spatial_fields
+        )
+        requires_approval_review = (
+            asset.status == MediaStatus.approved.value
+            and (before_asset["status"] != MediaStatus.approved.value or spatial_asset_changed)
+        )
+        approved_conflicts: list[dict[str, Any]] = []
+        if requires_approval_review:
             await session.execute(select(func.pg_advisory_xact_lock(APPROVAL_LOCK_ID)))
             await session.flush()
             analysis = await analyze_asset(asset, session)
             if analysis["has_conflict"]:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={"message": analysis["message"], "conflicts": analysis["conflicts"]},
-                )
+                if not confirm_conflict_approval or not conflict_snapshots_match(analysis["conflicts"], confirmed_conflicts):
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=approval_conflict_confirmation_detail(analysis),
+                    )
+                approved_conflicts = analysis["conflicts"]
 
         after_asset = asset_snapshot(asset)
         after_form = ApplicationFormBase.model_validate(application_form).model_dump(mode="json")
@@ -161,7 +177,12 @@ async def update_linked_application_form(
             session.add(log_activity(
                 asset, activity_type, message,
                 current_user, request.state.request_id,
-                {"asset": asset_diff, "form": form_diff, "form_id": str(application_form.id)},
+                {
+                    "asset": asset_diff,
+                    "form": form_diff,
+                    "form_id": str(application_form.id),
+                    **({"conflict_approval": {"confirmed": True, "conflicts": approved_conflicts}} if approved_conflicts else {}),
+                },
             ))
 
         await session.flush()
