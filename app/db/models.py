@@ -304,6 +304,8 @@ class ActivityLog(Base):
     actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("public.users.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    actor_role: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    actor_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     process_code: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
     activity_type: Mapped[str] = mapped_column(String(16), index=True, nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
