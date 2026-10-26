@@ -27,6 +27,7 @@ from app.schemas import (
     ApplicationFormRead,
     ApplicationFormUpdate,
     AttachmentDownloadRead,
+    DeletionReason,
     LinkedApplicationFormRead,
     LinkedApplicationFormUpdate,
     MediaAssetBase,
@@ -346,6 +347,7 @@ async def get_application_form_attachment_download(
 @router.delete("/{form_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_application_form(
     form_id: UUID,
+    payload: DeletionReason,
     request: Request,
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(require_roles("admin")),
@@ -356,11 +358,14 @@ async def delete_application_form(
         ActivityLog(
             asset_id=None,
             actor_user_id=current_user.id,
+            actor_role=current_user.role,
+            actor_name=getattr(current_user, "full_name", None),
             process_code=asset.process_code,
             activity_type=ActivityType.remocao.value,
-            message=f"Formulario e processo {asset.process_code} removidos do sistema.",
+            message=f"Formulario e processo {asset.process_code} removidos do sistema. Motivo: {payload.reason}",
             request_id=request.state.request_id,
-            changes={"before": asset_snapshot(asset), "form_id": str(application_form.id), "after": None},
+            changes={"before": asset_snapshot(asset), "created_at": asset.created_at.isoformat(),
+                     "form_id": str(application_form.id), "reason": payload.reason, "after": None},
         )
     )
     await session.delete(asset)

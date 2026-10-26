@@ -96,13 +96,49 @@ class DeleteMediaAssetPermissionTests(unittest.IsolatedAsyncioTestCase):
         app.dependency_overrides[get_current_user] = analyst
         app.dependency_overrides[get_session] = fake_session
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.delete(f"/api/media-assets/{asset.id}")
+            response = await client.request("DELETE", f"/api/media-assets/{asset.id}",
+                                            json={"reason": "Cadastro duplicado confirmado."})
 
         self.assertEqual(response.status_code, 204)
         session.get.assert_awaited_once()
         session.delete.assert_awaited_once_with(asset)
         session.commit.assert_awaited_once()
         session.add.assert_called_once()
+        self.assertEqual(session.add.call_args.args[0].changes["reason"], "Cadastro duplicado confirmado.")
+
+    async def test_deletion_requires_nonempty_reason(self):
+        session = SimpleNamespace(get=AsyncMock(), delete=AsyncMock())
+
+        async def analyst():
+            return SimpleNamespace(id=uuid.uuid4(), role="analyst")
+
+        async def fake_session():
+            yield session
+
+        app.dependency_overrides[get_current_user] = analyst
+        app.dependency_overrides[get_session] = fake_session
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            for payload in ({}, {"reason": "   "}):
+                response = await client.request("DELETE", f"/api/media-assets/{uuid.uuid4()}", json=payload)
+                self.assertEqual(response.status_code, 422)
+        session.get.assert_not_awaited()
+
+    async def test_form_deletion_also_requires_reason(self):
+        session = SimpleNamespace(get=AsyncMock())
+
+        async def admin():
+            return SimpleNamespace(id=uuid.uuid4(), role="admin")
+
+        async def fake_session():
+            yield session
+
+        app.dependency_overrides[get_current_user] = admin
+        app.dependency_overrides[get_session] = fake_session
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.request("DELETE", f"/api/application-forms/{uuid.uuid4()}",
+                                            json={"reason": "  "})
+        self.assertEqual(response.status_code, 422)
+        session.get.assert_not_awaited()
 
     async def test_viewer_cannot_reach_delete_route(self):
         session = SimpleNamespace(get=AsyncMock(return_value=None))

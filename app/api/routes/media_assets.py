@@ -16,6 +16,7 @@ from app.domain.rules import AssetForAnalysis, evaluate_conflicts
 from app.schemas import (
     ActivityType,
     ConflictAnalysisRead,
+    DeletionReason,
     MapAssetPage,
     MapAssetSummary,
     MapCluster,
@@ -187,6 +188,8 @@ def log_activity(
     return ActivityLog(
         asset_id=asset.id,
         actor_user_id=actor.id if actor else None,
+        actor_role=actor.role if actor else None,
+        actor_name=getattr(actor, "full_name", None) if actor else None,
         process_code=asset.process_code,
         activity_type=activity_type.value,
         message=message,
@@ -831,6 +834,7 @@ async def update_media_asset(
 @router.delete("/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_media_asset(
     asset_id: UUID,
+    payload: DeletionReason,
     request: Request,
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(require_roles(*WRITE_ROLES)),
@@ -840,11 +844,14 @@ async def delete_media_asset(
         ActivityLog(
             asset_id=None,
             actor_user_id=current_user.id,
+            actor_role=current_user.role,
+            actor_name=getattr(current_user, "full_name", None),
             process_code=asset.process_code,
             activity_type=ActivityType.remocao.value,
-            message=f"Registro {asset.process_code} removido do inventario municipal.",
+            message=f"Registro {asset.process_code} removido do inventario municipal. Motivo: {payload.reason}",
             request_id=request.state.request_id,
-            changes={"before": asset_snapshot(asset), "after": None},
+            changes={"before": asset_snapshot(asset), "created_at": asset.created_at.isoformat(),
+                     "reason": payload.reason, "after": None},
         )
     )
     await session.delete(asset)

@@ -12,6 +12,7 @@ from app.api.routes import (
     health,
     media_assets,
     media_rules,
+    process_tracking,
     public_submissions,
     requirement_responses,
     users,
@@ -59,6 +60,7 @@ app.include_router(health.router)
 app.include_router(auth.router, prefix="/api")
 app.include_router(media_assets.router, prefix="/api")
 app.include_router(activities.router, prefix="/api")
+app.include_router(process_tracking.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 app.include_router(media_rules.router, prefix="/api")
 app.include_router(application_forms.router, prefix="/api")

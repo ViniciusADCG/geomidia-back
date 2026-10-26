@@ -545,6 +545,18 @@ class ActivityLogPage(BaseModel):
     offset: int
 
 
+class DeletionReason(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def nonempty_reason(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Informe o motivo da exclusão.")
+        return value
+
+
 class ConflictItemRead(BaseModel):
     conflicting_asset_id: str
     process_code: str
