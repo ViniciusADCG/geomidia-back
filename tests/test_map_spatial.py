@@ -53,13 +53,13 @@ class MapRequestValidationTests(unittest.IsolatedAsyncioTestCase):
         operation = paths["/api/media-assets/map"]["get"]
         self.assertEqual(
             {parameter["name"] for parameter in operation["parameters"]},
-            {"north", "south", "east", "west", "media_type", "status", "company"},
+            {"north", "south", "east", "west", "media_type", "media_types", "status", "company"},
         )
         self.assertIn("/api/application-forms/by-asset/{asset_id}", paths)
         cluster = paths["/api/media-assets/map/clusters"]["get"]
         self.assertEqual(
             {parameter["name"] for parameter in cluster["parameters"]},
-            {"north", "south", "east", "west", "zoom", "media_type", "status", "company"},
+            {"north", "south", "east", "west", "zoom", "media_type", "media_types", "status", "company"},
         )
         self.assertIn("/api/media-assets/map/company-options", paths)
 
