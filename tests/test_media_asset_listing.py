@@ -112,6 +112,27 @@ class MediaAssetListingTests(unittest.IsolatedAsyncioTestCase):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             return await client.get("/api/media-assets", params=params)
 
+    async def test_multiple_types_use_union_with_correct_total_and_pagination(self):
+        response = await self.list_assets([
+            ("media_types", "outdoor"), ("media_types", "front light"),
+            ("limit", "2"), ("offset", "1"),
+        ])
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["total"], 3)
+        self.assertEqual(len(data["items"]), 2)
+        self.assertTrue(all(item["media_type"] in {"outdoor", "front light"} for item in data["items"]))
+        self.assertNotIn(self.delta, [item["id"] for item in data["items"]])
+
+    async def test_multiple_types_combine_with_status_and_empty_selection_shows_all(self):
+        response = await self.list_assets([
+            ("media_types", "outdoor"), ("media_types", "front light"), ("status", "aprovado"),
+        ])
+        self.assertEqual(response.json()["total"], 2)
+        self.assertEqual((await self.list_assets()).json()["total"], 4)
+        invalid = await self.list_assets({"media_types": "invalid"})
+        self.assertEqual(invalid.status_code, 422)
+
     async def test_pages_total_and_stable_order(self):
         first = (await self.list_assets({"limit": 2})).json()
         second = (await self.list_assets({"limit": 2, "offset": 2})).json()

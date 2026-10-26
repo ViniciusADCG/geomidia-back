@@ -233,6 +233,7 @@ def media_asset_filters(
     district: str | None,
     company: str | None,
     user_role: str,
+    media_types: list[MediaType] | None = None,
 ):
     filters = []
     if search and (term := search.strip()):
@@ -246,8 +247,11 @@ def media_asset_filters(
                 company_match(term, partial=True, include_manual=user_role != "viewer"),
             )
         )
+    selected_types = {item.value for item in media_types or []}
     if media_type:
-        filters.append(MediaAsset.media_type == media_type.value)
+        selected_types.add(media_type.value)
+    if selected_types:
+        filters.append(MediaAsset.media_type.in_(sorted(selected_types)))
     if status_filter:
         filters.append(MediaAsset.status == status_filter.value)
     if district and (district_name := district.strip()):
@@ -318,6 +322,7 @@ async def map_viewport_filters(
     status_filter: MediaStatus | None,
     company: str | None,
     user_role: str,
+    media_types: list[MediaType] | None = None,
 ):
     if north <= south or east <= west:
         raise HTTPException(
@@ -328,6 +333,7 @@ async def map_viewport_filters(
     filters = media_asset_filters(
         search=None,
         media_type=media_type,
+        media_types=media_types,
         status_filter=status_filter,
         district=None,
         company=company,
@@ -344,6 +350,7 @@ async def map_viewport_filters(
 async def list_media_assets(
     search: str | None = Query(default=None, max_length=120),
     media_type: MediaType | None = Query(default=None),
+    media_types: list[MediaType] | None = Query(default=None),
     status_filter: MediaStatus | None = Query(default=None, alias="status"),
     district: str | None = Query(default=None, max_length=120),
     company: str | None = Query(default=None, max_length=120),
@@ -355,6 +362,7 @@ async def list_media_assets(
     filters = media_asset_filters(
         search=search,
         media_type=media_type,
+        media_types=media_types,
         status_filter=status_filter,
         district=district,
         company=company,
@@ -385,6 +393,7 @@ async def list_map_assets(
     east: float = Query(ge=-180, le=180, allow_inf_nan=False),
     west: float = Query(ge=-180, le=180, allow_inf_nan=False),
     media_type: MediaType | None = Query(default=None),
+    media_types: list[MediaType] | None = Query(default=None),
     status_filter: MediaStatus | None = Query(default=None, alias="status"),
     company: str | None = Query(default=None, max_length=120),
     session: AsyncSession = Depends(get_session),
@@ -392,6 +401,7 @@ async def list_map_assets(
 ) -> MapAssetPage:
     filters = await map_viewport_filters(
         session, north, south, east, west, media_type, status_filter, company, current_user.role,
+        media_types=media_types,
     )
 
     total = await session.scalar(select(func.count()).select_from(MediaAsset).where(*filters)) or 0
@@ -437,6 +447,7 @@ async def list_map_clusters(
     west: float = Query(ge=-180, le=180, allow_inf_nan=False),
     zoom: int = Query(ge=0, le=22),
     media_type: MediaType | None = Query(default=None),
+    media_types: list[MediaType] | None = Query(default=None),
     status_filter: MediaStatus | None = Query(default=None, alias="status"),
     company: str | None = Query(default=None, max_length=120),
     session: AsyncSession = Depends(get_session),
@@ -444,6 +455,7 @@ async def list_map_clusters(
 ) -> MapClusterPage:
     filters = await map_viewport_filters(
         session, north, south, east, west, media_type, status_filter, company, current_user.role,
+        media_types=media_types,
     )
     # A grade ocupa no máximo 400 células, independentemente do número de ativos.
     # O tamanho geográfico da célula diminui ao aproximar a viewport.
