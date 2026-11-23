@@ -326,6 +326,7 @@ async def map_viewport_filters(
     company: str | None,
     user_role: str,
     media_types: list[MediaType] | None = None,
+    search: str | None = None,
 ):
     if north <= south or east <= west:
         raise HTTPException(
@@ -334,7 +335,7 @@ async def map_viewport_filters(
         )
     viewport = func.ST_MakeEnvelope(west, south, east, north, 4326)
     filters = media_asset_filters(
-        search=None,
+        search=search,
         media_type=media_type,
         media_types=media_types,
         status_filter=status_filter,
@@ -395,6 +396,7 @@ async def list_map_assets(
     south: float = Query(ge=-90, le=90, allow_inf_nan=False),
     east: float = Query(ge=-180, le=180, allow_inf_nan=False),
     west: float = Query(ge=-180, le=180, allow_inf_nan=False),
+    search: str | None = Query(default=None, max_length=120),
     media_type: MediaType | None = Query(default=None),
     media_types: list[MediaType] | None = Query(default=None),
     status_filter: MediaStatus | None = Query(default=None, alias="status"),
@@ -404,7 +406,7 @@ async def list_map_assets(
 ) -> MapAssetPage:
     filters = await map_viewport_filters(
         session, north, south, east, west, media_type, status_filter, company, current_user.role,
-        media_types=media_types,
+        media_types=media_types, search=search,
     )
 
     total = await session.scalar(select(func.count()).select_from(MediaAsset).where(*filters)) or 0
@@ -449,6 +451,7 @@ async def list_map_clusters(
     east: float = Query(ge=-180, le=180, allow_inf_nan=False),
     west: float = Query(ge=-180, le=180, allow_inf_nan=False),
     zoom: int = Query(ge=0, le=22),
+    search: str | None = Query(default=None, max_length=120),
     media_type: MediaType | None = Query(default=None),
     media_types: list[MediaType] | None = Query(default=None),
     status_filter: MediaStatus | None = Query(default=None, alias="status"),
@@ -458,7 +461,7 @@ async def list_map_clusters(
 ) -> MapClusterPage:
     filters = await map_viewport_filters(
         session, north, south, east, west, media_type, status_filter, company, current_user.role,
-        media_types=media_types,
+        media_types=media_types, search=search,
     )
     # A grade ocupa no máximo 400 células, independentemente do número de ativos.
     # O tamanho geográfico da célula diminui ao aproximar a viewport.
