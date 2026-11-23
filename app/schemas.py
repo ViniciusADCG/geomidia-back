@@ -185,6 +185,7 @@ class MapAssetSummary(BaseModel):
     official_process_code: str | None
     company_responsible: str | None
     contact_name: str | None
+    search_match: bool = False
 
 
 class MapAssetPage(BaseModel):
@@ -199,6 +200,16 @@ class MapCluster(BaseModel):
     count: int
     latitude: float
     longitude: float
+    search_matches: int = 0
+
+
+class MapSearchSummary(BaseModel):
+    total: int
+    media_types: list[MediaType]
+    north: float | None
+    south: float | None
+    east: float | None
+    west: float | None
 
 
 class MapClusterPage(BaseModel):

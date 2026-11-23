@@ -167,6 +167,7 @@ class MapPostgisTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(body["items"][0]), {
             "id", "latitude", "longitude", "radius_meters", "media_type", "status",
             "process_code", "official_process_code", "company_responsible", "contact_name",
+            "search_match",
         })
 
     async def test_search_filters_points_and_clusters_with_role_restrictions(self):
@@ -177,13 +178,39 @@ class MapPostgisTests(unittest.IsolatedAsyncioTestCase):
             for role in ("viewer", "analyst"):
                 response = await self.request(path, {**VIEWPORT, **extra, "search": "aurora"}, role)
                 self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.json()["total"], 1)
+                self.assertEqual(response.json()["total"], 2)
             viewer = await self.request(path, {**VIEWPORT, **extra, "search": "particular"}, "viewer")
             analyst = await self.request(path, {**VIEWPORT, **extra, "search": "particular"}, "analyst")
             self.assertEqual(viewer.json()["total"], 0)
-            self.assertEqual(analyst.json()["total"], 1)
+            self.assertEqual(analyst.json()["total"], 2)
         by_code = await self.request(params={**VIEWPORT, "search": company_asset.process_code})
-        self.assertEqual(by_code.json()["total"], 1)
+        self.assertEqual(by_code.json()["total"], 2)
+        self.assertEqual([item["id"] for item in by_code.json()["items"] if item["search_match"]], [str(company_asset.id)])
+        summary = (await self.request(path="/api/media-assets/map/search-summary", params={"search": "aurora"})).json()
+        self.assertEqual(summary["total"], 2)
+        self.assertAlmostEqual(summary["south"], -20.48)
+
+    async def test_search_refinement_categories_and_global_summary(self):
+        first = await self.add_asset(media_type="outdoor")
+        second = await self.add_asset(media_type="triface")
+        other_outdoor = await self.add_asset(media_type="outdoor")
+        excluded = await self.add_asset(media_type="front light")
+        first.process_code = "PROC-454647"
+        second.process_code = "PROC-454699"
+        other_outdoor.process_code = "PROC-123"
+        excluded.process_code = "PROC-456"
+        await self.session.flush()
+        broad = (await self.request(params={**VIEWPORT, "search": "4546"})).json()
+        self.assertEqual({x["id"] for x in broad["items"]}, {str(first.id), str(second.id), str(other_outdoor.id)})
+        self.assertEqual({x["id"] for x in broad["items"] if x["search_match"]}, {str(first.id), str(second.id)})
+        refined = (await self.request(params={**VIEWPORT, "search": "45464"})).json()
+        self.assertEqual({x["id"] for x in refined["items"]}, {str(first.id), str(other_outdoor.id)})
+        self.assertEqual([x["id"] for x in refined["items"] if x["search_match"]], [str(first.id)])
+        clusters = (await self.request(path="/api/media-assets/map/clusters", params={**VIEWPORT, "zoom": 12, "search": "4546"})).json()
+        self.assertEqual(sum(x["search_matches"] for x in clusters["clusters"]), 2)
+        summary = (await self.request(path="/api/media-assets/map/search-summary", params={"search": "4546"})).json()
+        self.assertEqual(summary["total"], 2)
+        self.assertEqual(set(summary["media_types"]), {"outdoor", "triface"})
 
     async def test_radius_intersects_from_every_side_and_corner(self):
         cases = (
@@ -335,7 +362,7 @@ class MapPostgisTests(unittest.IsolatedAsyncioTestCase):
         body = response.json()
         self.assertEqual(body["total"], 6)
         self.assertEqual(sum(cluster["count"] for cluster in body["clusters"]), 6)
-        self.assertTrue(all(set(cluster) == {"id", "count", "latitude", "longitude"} for cluster in body["clusters"]))
+        self.assertTrue(all(set(cluster) == {"id", "count", "latitude", "longitude", "search_matches"} for cluster in body["clusters"]))
 
     async def test_clusters_filters_zoom_empty_and_determinism(self):
         await self.add_asset(media_type="outdoor", company="Empresa Aurora")

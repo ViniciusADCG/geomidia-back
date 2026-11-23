@@ -21,6 +21,7 @@ from app.schemas import (
     MapAssetSummary,
     MapCluster,
     MapClusterPage,
+    MapSearchSummary,
     MediaAssetBase,
     MediaAssetCreate,
     MediaAssetPage,
@@ -335,7 +336,7 @@ async def map_viewport_filters(
         )
     viewport = func.ST_MakeEnvelope(west, south, east, north, 4326)
     filters = media_asset_filters(
-        search=search,
+        search=None,
         media_type=media_type,
         media_types=media_types,
         status_filter=status_filter,
@@ -343,11 +344,25 @@ async def map_viewport_filters(
         company=company,
         user_role=user_role,
     )
+    if search and search.strip():
+        match_filters = media_asset_filters(
+            search=search, media_type=media_type, media_types=media_types,
+            status_filter=status_filter, district=None, company=company, user_role=user_role,
+        )
+        filters.append(MediaAsset.media_type.in_(select(MediaAsset.media_type).where(*match_filters)))
     prefilter = await map_index_prefilter(session, viewport)
     if prefilter is not None:
         filters.append(prefilter)
     filters.append(map_spatial_match(north, south, east, west))
     return filters
+
+
+def map_search_match(search: str | None, role: str):
+    if not search or not search.strip():
+        return literal(False)
+    return func.coalesce(and_(*media_asset_filters(
+        search=search, media_type=None, status_filter=None, district=None, company=None, user_role=role,
+    )), False)
 
 
 @router.get("", response_model=MediaAssetPage)
@@ -432,6 +447,7 @@ async def list_map_assets(
             MediaAsset.official_process_code,
             company_name.label("company_responsible"),
             contact_name.label("contact_name"),
+            map_search_match(search, current_user.role).label("search_match"),
         )
         .where(*filters)
         .order_by(MediaAsset.created_at.desc(), MediaAsset.id.desc())
@@ -471,7 +487,8 @@ async def list_map_clusters(
     column = func.least(cells - 1, func.greatest(0, func.floor((MediaAsset.longitude - west) / cell_width)))
     row = func.least(cells - 1, func.greatest(0, func.floor((MediaAsset.latitude - south) / cell_height)))
     grouped = await session.execute(
-        select(column.label("column"), row.label("row"), func.count(MediaAsset.id).label("count"))
+        select(column.label("column"), row.label("row"), func.count(MediaAsset.id).label("count"),
+               func.count(MediaAsset.id).filter(map_search_match(search, current_user.role)).label("search_matches"))
         .where(*filters)
         .group_by(column, row)
         .order_by(column, row)
@@ -482,10 +499,35 @@ async def list_map_clusters(
             count=item._mapping["count"],
             latitude=south + (item._mapping["row"] + 0.5) * cell_height,
             longitude=west + (item._mapping["column"] + 0.5) * cell_width,
+            search_matches=item._mapping["search_matches"],
         )
         for item in grouped
     ]
     return MapClusterPage(clusters=clusters, total=sum(cluster.count for cluster in clusters))
+
+
+@router.get("/map/search-summary", response_model=MapSearchSummary)
+async def map_search_summary(
+    search: str = Query(min_length=1, max_length=120),
+    media_type: MediaType | None = Query(default=None),
+    media_types: list[MediaType] | None = Query(default=None),
+    status_filter: MediaStatus | None = Query(default=None, alias="status"),
+    company: str | None = Query(default=None, max_length=120),
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(require_roles(*READ_ROLES)),
+) -> MapSearchSummary:
+    if not search.strip():
+        return MapSearchSummary(total=0, media_types=[], north=None, south=None, east=None, west=None)
+    filters = media_asset_filters(search=search, media_type=media_type, media_types=media_types,
+                                  status_filter=status_filter, district=None, company=company,
+                                  user_role=current_user.role)
+    row = (await session.execute(select(
+        func.count(MediaAsset.id), func.min(MediaAsset.latitude), func.max(MediaAsset.latitude),
+        func.min(MediaAsset.longitude), func.max(MediaAsset.longitude),
+        func.array_agg(func.distinct(MediaAsset.media_type)),
+    ).where(*filters))).one()
+    return MapSearchSummary(total=row[0], south=row[1], north=row[2], west=row[3], east=row[4],
+                            media_types=row[5] if row[0] else [])
 
 
 @router.get("/map/company-options", response_model=list[str])
