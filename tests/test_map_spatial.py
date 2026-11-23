@@ -53,13 +53,13 @@ class MapRequestValidationTests(unittest.IsolatedAsyncioTestCase):
         operation = paths["/api/media-assets/map"]["get"]
         self.assertEqual(
             {parameter["name"] for parameter in operation["parameters"]},
-            {"north", "south", "east", "west", "media_type", "media_types", "status", "company"},
+            {"north", "south", "east", "west", "search", "media_type", "media_types", "status", "company"},
         )
         self.assertIn("/api/application-forms/by-asset/{asset_id}", paths)
         cluster = paths["/api/media-assets/map/clusters"]["get"]
         self.assertEqual(
             {parameter["name"] for parameter in cluster["parameters"]},
-            {"north", "south", "east", "west", "zoom", "media_type", "media_types", "status", "company"},
+            {"north", "south", "east", "west", "zoom", "search", "media_type", "media_types", "status", "company"},
         )
         self.assertIn("/api/media-assets/map/company-options", paths)
 
@@ -168,6 +168,22 @@ class MapPostgisTests(unittest.IsolatedAsyncioTestCase):
             "id", "latitude", "longitude", "radius_meters", "media_type", "status",
             "process_code", "official_process_code", "company_responsible", "contact_name",
         })
+
+    async def test_search_filters_points_and_clusters_with_role_restrictions(self):
+        company_asset = await self.add_asset(company="Empresa Aurora")
+        await self.add_asset(contact_name="Contato Particular")
+        await self.add_asset(latitude=-20.48, company="Empresa Aurora")
+        for path, extra in (("/api/media-assets/map", {}), ("/api/media-assets/map/clusters", {"zoom": 12})):
+            for role in ("viewer", "analyst"):
+                response = await self.request(path, {**VIEWPORT, **extra, "search": "aurora"}, role)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["total"], 1)
+            viewer = await self.request(path, {**VIEWPORT, **extra, "search": "particular"}, "viewer")
+            analyst = await self.request(path, {**VIEWPORT, **extra, "search": "particular"}, "analyst")
+            self.assertEqual(viewer.json()["total"], 0)
+            self.assertEqual(analyst.json()["total"], 1)
+        by_code = await self.request(params={**VIEWPORT, "search": company_asset.process_code})
+        self.assertEqual(by_code.json()["total"], 1)
 
     async def test_radius_intersects_from_every_side_and_corner(self):
         cases = (
