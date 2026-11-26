@@ -134,6 +134,7 @@ class MediaAssetRead(MediaAssetBase):
     official_process_code: str | None = None
     company_responsible: str | None = None
     company_cnpj: str | None = None
+    number_of_faces: str | None = None
     radius_meters: int
     created_at: datetime
     updated_at: datetime

@@ -140,7 +140,7 @@ class ApplicationFormSchemaTests(unittest.TestCase):
         self.assertEqual(serialized.status.value, "novos processos")
         self.assertEqual(serialized.expiration_date, date(2027, 5, 20))
 
-    def test_media_asset_read_exposes_linked_company_fields(self):
+    def test_media_asset_read_exposes_linked_company_and_faces(self):
         now = datetime.now(UTC)
         asset = MediaAsset(
             id=uuid.uuid4(),
@@ -157,20 +157,25 @@ class ApplicationFormSchemaTests(unittest.TestCase):
             created_at=now,
             updated_at=now,
         )
+        analyst = User(id=uuid.uuid4(), username="analista", full_name="Analista", password_hash="unused", role="analyst")
+        viewer = User(id=uuid.uuid4(), username="visualizador", full_name="Visualizador", password_hash="unused", role="viewer")
+        self.assertIsNone(asset_for_user(asset, viewer).number_of_faces)
+
         asset.application_form = ApplicationForm(
             id=uuid.uuid4(),
             asset_id=asset.id,
             asset=asset,
             created_at=now,
             updated_at=now,
-            **self.valid_form(company_responsible="Empresa Filtro", company_cnpj="11222333000144"),
+            **self.valid_form(company_responsible="Empresa Filtro", company_cnpj="11222333000144", number_of_faces="Duas"),
         )
-        user = User(id=uuid.uuid4(), username="analista", full_name="Analista", password_hash="unused", role="analyst")
 
-        serialized = asset_for_user(asset, user)
+        serialized = asset_for_user(asset, analyst)
 
         self.assertEqual(serialized.company_responsible, "Empresa Filtro")
         self.assertEqual(serialized.company_cnpj, "11222333000144")
+        self.assertEqual(serialized.number_of_faces, "Duas")
+        self.assertEqual(asset_for_user(asset, viewer).number_of_faces, "Duas")
 
 
 if __name__ == "__main__":

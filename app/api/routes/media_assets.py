@@ -136,6 +136,7 @@ def asset_for_user(asset: MediaAsset, user: User) -> MediaAssetRead:
             update={
                 "company_responsible": application_form.company_responsible,
                 "company_cnpj": application_form.company_cnpj,
+                "number_of_faces": application_form.number_of_faces,
             }
         )
     if user.role == "viewer":
