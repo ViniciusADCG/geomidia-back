@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, select, text
 from sqlalchemy.pool import StaticPool
 
 from app.core.security import get_current_user
-from app.db.models import MediaAsset
+from app.db.models import ApplicationForm, MediaAsset
 from app.db.session import get_session
 from app.main import app
 
@@ -58,7 +58,7 @@ class MediaAssetListingTests(unittest.IsolatedAsyncioTestCase):
         same_time = datetime(2026, 10, 12, 12, tzinfo=UTC)
         self.add_asset("alpha", "PROC-2026-101", "OF-101", "Rua das Flores", "Centro",
                        "outdoor", "aprovado", "Contato Oculto", same_time,
-                       company="Empresa Aurora")
+                       company="Empresa Aurora", number_of_faces="Duas")
         self.add_asset("beta", "PROC-2026-102", None, "Avenida Central", "Jardim",
                        "front light", "análise", "Oficina Manual", same_time)
         self.add_asset("gamma", "PROC-2026-103", None, "Rua do Sol", "Centro",
@@ -75,7 +75,7 @@ class MediaAssetListingTests(unittest.IsolatedAsyncioTestCase):
         self.engine.dispose()
 
     def add_asset(self, key, code, official, address, district, media_type, status, contact, created_at,
-                  company=None):
+                  company=None, number_of_faces=None):
         asset_id = uuid.uuid4()
         asset = MediaAsset(
             id=asset_id, process_code=code, official_process_code=official, address=address,
@@ -85,7 +85,10 @@ class MediaAssetListingTests(unittest.IsolatedAsyncioTestCase):
             created_at=created_at, updated_at=created_at,
         )
         if company:
-            asset.__dict__["application_form"] = SimpleNamespace(company_responsible=company, company_cnpj=None)
+            asset.application_form = ApplicationForm(
+                company_responsible=company,
+                number_of_faces=number_of_faces,
+            )
         self.assets[str(asset_id)] = asset
         setattr(self, key, str(asset_id))
         self.connection.execute(text("""
@@ -191,6 +194,10 @@ class MediaAssetListingTests(unittest.IsolatedAsyncioTestCase):
         linked = (await self.list_assets({"company": "Empresa Aurora"}, role="viewer")).json()
         self.assertEqual(linked["total"], 2)
         self.assertTrue(all(item["company_responsible"] == "Empresa Aurora" for item in linked["items"]))
+        self.assertEqual(
+            {item["id"]: item["number_of_faces"] for item in linked["items"]},
+            {self.alpha: "Duas", self.gamma: None},
+        )
 
     async def test_existing_limit_500_and_maximum(self):
         self.assertEqual((await self.list_assets({"limit": 500})).status_code, 200)
